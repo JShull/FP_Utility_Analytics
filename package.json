@@ -1,0 +1,38 @@
+{
+    "name": "com.fuzzphyte.utility.analytics",
+    "version": "0.1.0",
+    "displayName": "FP Analytics",
+    "description": "FP Analytics is a set of simple statistics that can be used for simple game/event stats. It contains calculators to allow you to combine results from events",
+    "unity": "2022.3",
+    "unityRelease": "12f1",
+    "documentationUrl": "https://github.com/jshull/FP_Utility_Analytics/README.md",
+    "changelogUrl": "https://github.com/jshull/FP_Utility_Analytics/CHANGELOG.md",
+    "licensesUrl": "https://github.com/jshull/FP_Utility_Analytics/LICENSE.md",
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/jshull/FP_Utility_Analytics.git"
+    },
+    "dependencies": {
+      "com.unity.test-framework": "1.1.31",
+      "com.unity.mathematics": "1.2.1",
+      "com.fuzzphyte.utility": "https://github.com/JShull/FP_Utility.git"
+    },
+    "samples": [
+      {
+        "displayName": "Simple Event Stats",
+        "description": "Includes some examples of the different scriptable object based stat events",
+        "path": "Samples~/SamplesURP"
+      }
+    ],
+    "keywords": [
+      "ScriptableObject",
+      "Analytics",
+      "FuzzPhyte"
+    ],
+    "author": {
+      "name": "John Shull",
+      "email": "the.john.shull@gmail.com",
+      "url": "https://github.com/jshull"
+    },
+    "type": "tool"
+  }

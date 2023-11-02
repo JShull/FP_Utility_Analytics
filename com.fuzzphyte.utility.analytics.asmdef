@@ -1,0 +1,16 @@
+{
+    "name": "com.fuzzphyte.utility.analytics",
+    "rootNamespace": "FuzzPhyte.Utility.Analytics",
+    "references": [
+        "GUID:185f74c9436ecd445b189a7dad057064"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

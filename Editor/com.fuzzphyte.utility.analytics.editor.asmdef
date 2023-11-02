@@ -1,0 +1,19 @@
+{
+    "name": "com.fuzzphyte.utility.analytics.editor",
+    "rootNamespace": "FuzzPhyte.Utility.Analytics.Editor",
+    "references": [
+        "GUID:185f74c9436ecd445b189a7dad057064",
+        "GUID:9dc355f485f3be447b92cfabafbeafcc"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
