@@ -1,12 +1,12 @@
 # FuzzPhyte Unity Tools
 
-## Utility
+## Utility Analytics
 
-FP_Utility is designed and built to be a simple set of base classes to be used in almost all future FuzzPhyte packages. There is an element of Scriptable Object and an element of just simple input/output functions as well as some core scripts timed to timers etc.
+FP_Utility_Analytics is designed to be a set of stat reporters that build upon simple calculators. You assign the calculator you want to your stat reporter, you then generate various events that report to the stat reporter, and when you want to process your calculations you just end the reporter and it will run all associated calculators. It's designed to be extended and built upon. The architecture is a little messy as there are two layers of abstraction between mono and then two layers deep of standard C# classes that hold the data. Please use the examples as a starting point.
 
 ## Setup & Design
 
-FP_Utility is not much by itself and is designed to allow extensions and/or inheritance for other work. An example of this is the FP_Notification.cs file. This is a super simple class that a lot of other projects will be derived from.
+FP_Utility_Analytics works really well if you have a UI in mind that you want to pass the data to. By itself this package will record various things for you and shouldn't be used if you're running A LOT of data events - use a damn database! This is just to manage simple data.
 
 ### Software Architecture
 
