@@ -61,7 +61,7 @@ namespace FuzzPhyte.Utility.Analytics
         /// </summary>
         /// <param name="calcType">the calculator type</param>
         /// <returns></returns>
-        public override double ReturnStatCalculation(StatCalculationType calcType)
+        public override (double,bool) ReturnStatCalculation(StatCalculationType calcType)
         {
             return theStatData.ReturnCalculatorResults(calcType);
         }

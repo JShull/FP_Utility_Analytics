@@ -8,8 +8,15 @@ namespace FuzzPhyte.Utility.Analytics
 {
     /// <summary>
     /// This is a "special" event as the game clock can be used for other things and also you can report it as a 'stat' but in most cases this is something that has a permanent home
-    /// </summary>
-    public class FP_Stat_GameClock : FP_Stat_Event
+    /// How to Use:
+    ///   Assuming this is already registered with the FP_StatManager.cs
+    ///   You have to initialize prior: 'StartClockReporter()'
+    ///   When you want to start the timer: 'StartTimer()'
+    ///   If you need to pause: 'PauseTimer()'
+    ///   If you need to return to timer from pause: 'UnPauseTimer()'
+    ///   When you want to end the timer: 'EndTimer()'
+/// </summary>
+public class FP_Stat_GameClock : FP_Stat_Event
     {
         //[Space]
         //[Header("Game Clock Variables")]
@@ -22,7 +29,8 @@ namespace FuzzPhyte.Utility.Analytics
         public bool Paused { get => _paused; }
         public bool TimerFinished { get => _timerFinished; }
         public bool RunningClock { get => _runningClock; }
-        
+
+        private float _localStartTimeSinceStart;
        
 
         private float _runningGamePauseTimeSeconds=0;
@@ -62,6 +70,7 @@ namespace FuzzPhyte.Utility.Analytics
         public void StartTimer()
         {
             NewStatEventReported();
+            _localStartTimeSinceStart = Time.realtimeSinceStartup;
             _runningClock = true;
         }
         /// <summary>
@@ -107,14 +116,32 @@ namespace FuzzPhyte.Utility.Analytics
                 _runningGamePauseTimeSeconds += Time.deltaTime;
             }
         }
+        /// <summary>
+        /// Returns the total time paused
+        /// </summary>
+        /// <returns></returns>
         public float ReturnPausedTime()
         {
             return _runningGamePauseTimeSeconds;
         }
-        
-        public double AdjustDoubleTimeSecondsForPause(double passedTimeSeconds)
+        /// <summary>
+        /// returns the difference and is using Unity local game time
+        /// the stat system uses DateTime so there might be a small variation in the end result
+        /// </summary>
+        /// <returns></returns>
+        public float AdjustDoubleTimeSecondsForPause()
         {
-            return passedTimeSeconds - _runningGamePauseTimeSeconds;
+            if (!_runningClock)
+            {
+                return 0;
+            }
+            //stat system uses DateTime.Now to store time of events
+            //we could pull back the first event time subtract our time now get the time span
+            //instead going to cache our local game start time and use that as a reference point
+            //account for pause and return
+            return (Time.realtimeSinceStartup-_localStartTimeSinceStart)-_runningGamePauseTimeSeconds;
         }
+
+
     }
 }

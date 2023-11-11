@@ -4,6 +4,9 @@ using System;
 
 namespace FuzzPhyte.Utility.Analytics.Editor
 {
+    /// <summary>
+    /// Editor class to help with the clock
+    /// </summary>
     [CustomEditor(typeof(FP_Stat_GameClock))]
     public class FP_GameClock_Editor : UnityEditor.Editor
     {
@@ -29,9 +32,14 @@ namespace FuzzPhyte.Utility.Analytics.Editor
         }
         public override void OnInspectorGUI()
         {
-            // Draw the default inspector options
-            //DrawDefaultInspector();
-            serializedObject.Update();
+            if (!Application.isPlaying)
+            {
+                EditorGUILayout.LabelField("Reminders", EditorStyles.boldLabel);
+                EditorGUILayout.HelpBox("Initialize: 'StartClockReporter()'\nStart the timer: 'StartTimer()'", MessageType.Info);
+            }
+                // Draw the default inspector options
+                //DrawDefaultInspector();
+                serializedObject.Update();
             EditorGUILayout.PropertyField(SOReporterDetails);
             EditorGUILayout.PropertyField(EventDetails);
             // Ensure the game clock script is not null

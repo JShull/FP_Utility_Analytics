@@ -14,12 +14,14 @@ namespace FuzzPhyte.Utility.Analytics
     public class FP_StatManager: MonoBehaviour 
     {
         public static FP_StatManager Instance { get; private set; }
+        [Tooltip("If we want to keep this around between scenes")]
+        public bool KeepOnLoad;
         [Tooltip("Dictionary to hold all of our stats that are of type int")]
         protected Dictionary<FP_Stat_Type, FP_StatReporter> AlLStatsDict = new Dictionary<FP_Stat_Type, FP_StatReporter>();
         [Tooltip("List to store Events by Scene-all FP_Stat_Event register with this manager")]
         protected List<FP_Stat_Event> AllStatEvents = new List<FP_Stat_Event>();
         [Space]
-        [Header("Events for End/Start")]
+        [Header("Events for Start/End")]
         [Tooltip("Called after we run our special start function")]
         public UnityEvent FinishedStartSpecialStat;
         [Tooltip("Called after we update/end all stat collection")]
@@ -34,7 +36,10 @@ namespace FuzzPhyte.Utility.Analytics
             {
                 Instance = this;
                 Debug.LogWarning($"Awake via {this.gameObject.name}, I am the chosen one... I will live on forever");
-                DontDestroyOnLoad(gameObject);
+                if (KeepOnLoad)
+                {
+                    DontDestroyOnLoad(gameObject);
+                }
             }
             else if (Instance != this)
             {

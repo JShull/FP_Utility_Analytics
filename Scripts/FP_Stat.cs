@@ -22,21 +22,21 @@ namespace FuzzPhyte.Utility.Analytics
         protected DateTime OverallEndTime;
         [Tooltip("Stack of events")]
         protected List<StatReportArgs<T>> _statHistory;
-        protected Dictionary<StatCalculationType, double> _statCalculations;
+        protected Dictionary<StatCalculationType, (double,bool)> _statCalculations;
         
 
         public FP_Stat(FP_Stat_Type statTypeData, List<StatCalculationType> calcTypes)
         {
             _statHistory = new List<StatReportArgs<T>>();
             possibleCalculationTypes = new List<StatCalculationType>(calcTypes);
-            _statCalculations= new Dictionary<StatCalculationType, double>();
+            _statCalculations= new Dictionary<StatCalculationType, (double,bool)>();
             //build the dictionary of our results
             for(int i=0;i<calcTypes.Count; i++)
             {
                 var statCalc = calcTypes[i];
                 if (!_statCalculations.ContainsKey(statCalc))
                 {
-                    _statCalculations.Add(statCalc, 0.0);
+                    _statCalculations.Add(statCalc, (0.0,false));
                 }
                 
             }
@@ -150,15 +150,15 @@ namespace FuzzPhyte.Utility.Analytics
         /// </summary>
         /// <param name="calculator"></param>
         /// <param name="results"></param>
-        public virtual void UpdateCalculatorResults(StatCalculationType calculator, double results)
+        public virtual void UpdateCalculatorResults(bool validCalculation, StatCalculationType calculator, double results)
         {
             if (_statCalculations.ContainsKey(calculator))
             {
-                _statCalculations[calculator] = results;
+                _statCalculations[calculator] = (results,validCalculation);
             }
             else
             {
-                _statCalculations.Add(calculator, results);
+                _statCalculations.Add(calculator, (results,validCalculation));
             }
         }
         /// <summary>
@@ -170,48 +170,62 @@ namespace FuzzPhyte.Utility.Analytics
             {
                 var curCalculator = possibleCalculationTypes[i];
                 double result = 0.0;
-
+                bool validCalc = false;
                 switch (curCalculator)
                 {
                     case StatCalculationType.Sum:
                         SumCalculator<T> sumCalc = new SumCalculator<T>(conversionFunc, StatCalculationType.Sum);
-                        result = sumCalc.CalculateStat(_statHistory);
+                        var sumItems = sumCalc.CalculateStat(_statHistory);
+                        result = sumItems.Item1;
+                        validCalc = sumItems.Item2;
                         break;
                     case StatCalculationType.Average:
                         AverageCalculator<T> avgCalc = new AverageCalculator<T>(conversionFunc, StatCalculationType.Average);
-                        result = avgCalc.CalculateStat(_statHistory);
+                        var avgItems = avgCalc.CalculateStat(_statHistory);
+                        result = avgItems.Item1;
+                        validCalc = avgItems.Item2;
                         break;
                     case StatCalculationType.AverageTimeBetweenEvents:
                         TimeBetweenCalculator<T> timeCalc = new TimeBetweenCalculator<T>(conversionFunc, StatCalculationType.AverageTimeBetweenEvents);
-                        result = timeCalc.CalculateStat(_statHistory);
+                        var avgTimeItems = timeCalc.CalculateStat(_statHistory);
+                        result = avgTimeItems.Item1;
+                        validCalc = avgTimeItems.Item2;
                         break;
                     case StatCalculationType.MaxEvent:
                         MaxEventCalculator<T> maxCalc = new MaxEventCalculator<T>(conversionFunc, StatCalculationType.MaxEvent);
-                        result = maxCalc.CalculateStat(_statHistory);
-                        //most likely this will be 1
+                        var maxItems = maxCalc.CalculateStat(_statHistory);
+                        result = maxItems.Item1;
+                        validCalc = maxItems.Item2;
                         break;
                     case StatCalculationType.MinEvent:
                         MinEventCalculator<T> minCalc = new MinEventCalculator<T>(conversionFunc, StatCalculationType.MinEvent);
-                        result = minCalc.CalculateStat(_statHistory);
-                        //most likely for this pickup int will be 1
+                        var minItems = minCalc.CalculateStat(_statHistory);
+                        result = minItems.Item1;
+                        validCalc = minItems.Item2;
                         break;
                     case StatCalculationType.StandardDeviation:
                         StandardDevCalculator<T> stdCalc = new StandardDevCalculator<T>(conversionFunc, StatCalculationType.StandardDeviation);
-                        result = stdCalc.CalculateStat(_statHistory);
+                        var stdItems = stdCalc.CalculateStat(_statHistory);
+                        result = stdItems.Item1;
+                        validCalc = stdItems.Item2;
                         break;
                     case StatCalculationType.Variance:
                         VarianceCalculator<T> varCalc = new VarianceCalculator<T>(conversionFunc, StatCalculationType.Variance);
-                        result = varCalc.CalculateStat(_statHistory);
+                        var varItems = varCalc.CalculateStat(_statHistory);
+                        result = varItems.Item1;
+                        validCalc = varItems.Item2;
                         break;
                     case StatCalculationType.TotalTime:
                         TotalTimeCalculator<T> ttCalc = new TotalTimeCalculator<T>(conversionFunc, StatCalculationType.TotalTime);
-                        result = ttCalc.CalculateStat(_statHistory);
+                        var ttItems = ttCalc.CalculateStat(_statHistory);
+                        result = ttItems.Item1;
+                        validCalc = ttItems.Item2;
                         break;
                 }
-                UpdateCalculatorResults(curCalculator, result);
+                UpdateCalculatorResults(validCalc,curCalculator, result);
             }
         }
-        public virtual double ReturnCalculatorResults(StatCalculationType calculator)
+        public virtual (double,bool) ReturnCalculatorResults(StatCalculationType calculator)
         {
             if (_statCalculations.ContainsKey(calculator))
             {
@@ -219,7 +233,7 @@ namespace FuzzPhyte.Utility.Analytics
             }
             else
             {
-                return 0.0;
+                return (0.0,false);
             }
         }
         /// <summary>

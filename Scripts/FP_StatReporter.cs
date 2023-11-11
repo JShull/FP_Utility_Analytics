@@ -27,17 +27,19 @@ namespace FuzzPhyte.Utility.Analytics
                     var theManager = new GameObject("StatManager");
                     theManager.AddComponent<FP_StatManager>();
                     theManager.GetComponent<FP_StatManager>().RegisterStatCollector(StatReporter, this);
+                    Debug.Log($"{gameObject.name}: Didn't find a FP_StatManager Instance, made my own and registered: Registered Stat Collector on Start");
                 }
                 else
                 {
+                    Debug.Log($"{gameObject.name}: Found an FP_StatManager instance and registered Stat collector");
                     FP_StatManager.Instance.RegisterStatCollector(StatReporter, this);
                 }
             }
             else
             {
+                Debug.Log($"{gameObject.name}: registered with the FP_StatManager");
                 FPStatManager.RegisterStatCollector(StatReporter, this);
             }
-            Debug.Log($"{this.gameObject.name}: FP_StatReporter Finished Start");
         }
         
         public virtual void EndStatData()
@@ -49,9 +51,9 @@ namespace FuzzPhyte.Utility.Analytics
         /// </summary>
         /// <param name="calcType"></param>
         /// <returns></returns>
-        public virtual double ReturnStatCalculation(StatCalculationType calcType)
+        public virtual (double,bool) ReturnStatCalculation(StatCalculationType calcType)
         {
-            return 0;
+            return (0,false);
         }
     }
 

@@ -111,7 +111,7 @@ namespace FuzzPhyte.Utility.Analytics
     public interface IStatCalculator<T>
     {
         Func<T, double> ConversionFunction { get; set; }
-        double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType);
+        (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType);
     }
     /// <summary>
     /// Base class for a calculator
@@ -134,19 +134,23 @@ namespace FuzzPhyte.Utility.Analytics
             statValue = 0;
         }
 
-        public bool ValidCalculation(List<StatReportArgs<T>> statHistory)
+        public virtual bool ValidCalculation(List<StatReportArgs<T>> statHistory)
         {
             if (statHistory.Count == 0)
             {
-                throw new InvalidOperationException("Stat History is empty");
+                Debug.WriteLine("Stat History is empty");
+                return false;
+                //throw new InvalidOperationException("Stat History is empty");
             }
             if (ConversionFunction == null)
             {
-                throw new InvalidOperationException("Conversion Function is null");
+                Debug.WriteLine("Conversion Function is null");
+                return false;
+                //throw new InvalidOperationException("Conversion Function is null");
             }
             return true;
         }
-        public virtual double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType)
+        public virtual (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType)
         {
             throw new NotImplementedException();
         }
@@ -162,18 +166,19 @@ namespace FuzzPhyte.Utility.Analytics
         public SumCalculator(Func<T, double> conversionFunction,StatCalculationType myType) : base(conversionFunction,myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.Sum)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.Sum)
         {
             if (!ValidCalculation(statHistory))
             {
-                throw new InvalidOperationException($"Cannot continue on with our sum calculator, see previous errors");
+                return (0, false);
+                //throw new InvalidOperationException($"Cannot continue on with our sum calculator, see previous errors");
             }
             statValue = 0;
             foreach (var item in statHistory)
             {
                 statValue += ConversionFunction(item.Data);
             }
-            return statValue;
+            return (statValue,true);
         }
     }
     /// <summary>
@@ -188,14 +193,19 @@ namespace FuzzPhyte.Utility.Analytics
         {
             avg = 0;
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.Average)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.Average)
         {
             //reset values of interest
             statValue = 0;
             avg = 0;
-            base.CalculateStat(statHistory, StatCalculationType.Sum);
+            //base.CalculateStat(statHistory, StatCalculationType.Sum);
+            var item = base.CalculateStat(statHistory, StatCalculationType.Sum);
+            if (!item.Item2)
+            {
+                return (0, false);
+            }
             avg = statValue / statHistory.Count;
-            return avg;
+            return (avg,true);
         }
     }
     /// <summary>
@@ -208,11 +218,12 @@ namespace FuzzPhyte.Utility.Analytics
         public TimeBetweenCalculator(Func<T, double> conversionFunction, StatCalculationType myType) : base(conversionFunction,myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.AverageTimeBetweenEvents)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.AverageTimeBetweenEvents)
         {
             if (!ValidCalculation(statHistory))
             {
-                throw new InvalidOperationException($"Cannot continue on with our Time Between calculator, see previous errors");
+                return (0, false);
+                //throw new InvalidOperationException($"Cannot continue on with our Time Between calculator, see previous errors");
             }
             statValue = 0;
             
@@ -226,7 +237,7 @@ namespace FuzzPhyte.Utility.Analytics
                 Debug.WriteLine($"Time between events {statValue}");
             }
             avg = (statValue / (statHistory.Count-1));
-            return avg;
+            return (avg,true);
         }
     }
     /// <summary>
@@ -239,14 +250,15 @@ namespace FuzzPhyte.Utility.Analytics
         public MaxEventCalculator(Func<T, double> conversionFunction, StatCalculationType myType) : base(conversionFunction,myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.MaxEvent)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.MaxEvent)
         {
             if (!ValidCalculation(statHistory))
             {
-                throw new InvalidOperationException($"Cannot continue on with our maximum calculator, see previous errors");
+                return (0, false);
+                //throw new InvalidOperationException($"Cannot continue on with our maximum calculator, see previous errors");
             }
             statValue = statHistory.Max(arg => ConversionFunction(arg.Data));
-            return statValue;
+            return (statValue,true);
         }
     }
     /// <summary>
@@ -259,14 +271,15 @@ namespace FuzzPhyte.Utility.Analytics
         public MinEventCalculator(Func<T, double> conversionFunction, StatCalculationType myType) : base(conversionFunction, myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.MinEvent)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.MinEvent)
         {
             if (!ValidCalculation(statHistory))
             {
-                throw new InvalidOperationException($"Cannot continue on with the minimum calculator, see previous errors");
+                return (0.0, false);
+                //throw new InvalidOperationException($"Cannot continue on with the minimum calculator, see previous errors");
             }
             statValue = statHistory.Min(arg => ConversionFunction(arg.Data));
-            return statValue;
+            return (statValue,true);
         }
     }
     /// <summary>
@@ -282,13 +295,17 @@ namespace FuzzPhyte.Utility.Analytics
         public StandardDevCalculator(Func<T, double> conversionFunction, StatCalculationType myType) : base(conversionFunction, myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.StandardDeviation)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.StandardDeviation)
         {
-            base.CalculateStat(statHistory, StatCalculationType.Average);
-
+            //base.CalculateStat(statHistory, StatCalculationType.Average);
+            var items = base.CalculateStat(statHistory, StatCalculationType.Average);
+            if (!items.Item2)
+            {
+                return (0, false);
+            }
             sumSquareDifferences = statHistory.Sum(item => Math.Pow(ConversionFunction(item.Data) - avg, 2));
             standardDeviation = Math.Sqrt(sumSquareDifferences / statHistory.Count);
-            return standardDeviation;
+            return (standardDeviation,true);
         }
     }
     /// <summary>
@@ -302,11 +319,16 @@ namespace FuzzPhyte.Utility.Analytics
         public VarianceCalculator(Func<T, double> conversionFunction, StatCalculationType myType) : base(conversionFunction,myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.Variance)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.Variance)
         {
-            base.CalculateStat(statHistory, StatCalculationType.StandardDeviation);
+            //base.CalculateStat(statHistory, StatCalculationType.StandardDeviation);
+            var items = base.CalculateStat(statHistory, StatCalculationType.StandardDeviation);
+            if (!items.Item2)
+            {
+                return (0, false);
+            }
             variance = sumSquareDifferences / statHistory.Count;
-            return variance;
+            return (variance,true);
         }
     }
     /// <summary>
@@ -318,22 +340,22 @@ namespace FuzzPhyte.Utility.Analytics
         public TotalTimeCalculator(Func<T, double> conversionFunction, StatCalculationType myType) : base(conversionFunction, myType)
         {
         }
-        public override double CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.TotalTime)
+        public override (double,bool) CalculateStat(List<StatReportArgs<T>> statHistory, StatCalculationType calcType = StatCalculationType.TotalTime)
         {
             if (!ValidCalculation(statHistory))
             {
-                throw new InvalidOperationException($"Cannot continue on with our maximum calculator, see previous errors");
+                return (0, false);
             }
-            //going to return the last entry
-            //going to return the first entry
-            var timeDiff = statHistory.Last().EventTime - statHistory.FirstOrDefault().EventTime;
-            return timeDiff.TotalSeconds;
-            //statValue = statHistory.Max(arg => ConversionFunction(arg.Data));
-            //stat
             
+            var timeDiff = statHistory.Last().EventTime - statHistory.FirstOrDefault().EventTime;
+            return (timeDiff.TotalSeconds,true);
         }
     }
-
+    /// <summary>
+    /// Weight Grade Calculator = assumes your calculators are okay
+    /// and weights equate to 1.0
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
     public class WeightedGradeCalculator<T>
     {
         private readonly List<(AStatCalculator<T> Calculator, double Weight)> _calculatorsWithWeights;
@@ -353,9 +375,15 @@ namespace FuzzPhyte.Utility.Analytics
         /// <exception cref="ArgumentException"></exception>
         public void AddCalculator(AStatCalculator<T> calculator, double weight)
         {
-            if (calculator == null) throw new ArgumentNullException(nameof(calculator));
-            if (weight < 0) throw new ArgumentException("Weight must be non-negative.", nameof(weight));
+            if (calculator == null)
+            {
+                throw new ArgumentNullException($"Calculator is null: ${nameof(calculator)}");
+            }
 
+            if (weight < 0)
+            {
+                throw new ArgumentException("Weight must be non-negative.", nameof(weight));
+            }
             _calculatorsWithWeights.Add((calculator, weight));
         }
         /// <summary>
@@ -373,14 +401,14 @@ namespace FuzzPhyte.Utility.Analytics
         /// <exception cref="InvalidOperationException"></exception>
         public double CalculateWeightedGrade()
         {
-            
+
             // Check if total weights equal 1
-            if (Math.Abs(ReturnTotalWeights() - 1) > 1e-10)
-                throw new InvalidOperationException("Total weights of calculators must equal 1.");
-
+            var weights = ReturnTotalWeights();
+            if (Math.Abs(weights - 1) > 1e-10)
+            {
+                throw new InvalidOperationException($"Total weights of calculators must equal 1, you're at {weights}");
+            }
             double weightedSum = 0;
-
-            
             for (int i = 0; i < _calculatorsWithWeights.Count; i++)
             {
                 var (calculator, weight) = _calculatorsWithWeights[i];
