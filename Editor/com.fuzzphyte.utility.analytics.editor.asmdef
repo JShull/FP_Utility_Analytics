@@ -2,8 +2,8 @@
     "name": "com.fuzzphyte.utility.analytics.editor",
     "rootNamespace": "FuzzPhyte.Utility.Analytics.Editor",
     "references": [
-        "GUID:185f74c9436ecd445b189a7dad057064",
-        "GUID:9dc355f485f3be447b92cfabafbeafcc"
+        "GUID:9dc355f485f3be447b92cfabafbeafcc",
+        "GUID:b2274f1409ce26f40919f89f9d4f667c"
     ],
     "includePlatforms": [
         "Editor"

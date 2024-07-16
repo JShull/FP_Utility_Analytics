@@ -1,14 +1,14 @@
 {
-    "name": "com.fuzzphyte.utility.analytics.samples",
-    "rootNamespace": "FuzzPhyte.Utility.Analytics.Samples",
+    "name": "com.fuzzphyte.analytics.samples.firebase",
+    "rootNamespace": "FuzzPhyte.Utility.Analytics.Samples.Firebase",
     "references": [
-        "GUID:185f74c9436ecd445b189a7dad057064",
-        "GUID:6055be8ebefd69e48b49212b09b47b2f"
+        "GUID:9dc355f485f3be447b92cfabafbeafcc",
+        "GUID:4e25eb8a75ebe864e973e6c3fd0fdfe1"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": true,
-    "overrideReferences": false,
+    "overrideReferences": true,
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
