@@ -12,7 +12,7 @@ namespace FuzzPhyte.Utility.Analytics
     }
     [Serializable]
     [CreateAssetMenu(fileName = "StatType_", menuName = "FuzzPhyte/Utility/Analytics/StatType", order = 0)]
-    public class FP_Stat_Type : ScriptableObject
+    public class FP_Stat_Type : FP_Data
     {
         [Tooltip("Needs to be Unique")]
         public string StatIndex;

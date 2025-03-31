@@ -1,9 +1,9 @@
-using UnityEngine;
-using UnityEditor;
-using System;
-
 namespace FuzzPhyte.Utility.Analytics.Editor
 {
+    using UnityEngine;
+    using UnityEditor;
+    using System;
+
     /// <summary>
     /// Editor class to help with the clock
     /// </summary>
@@ -12,14 +12,17 @@ namespace FuzzPhyte.Utility.Analytics.Editor
     {
         private FP_Stat_GameClock _gameClock;
         SerializedProperty SOReporterDetails;
-        SerializedProperty EventDetails;
+        SerializedProperty SOStatCollector;
+        //SerializedProperty EventDetails;
         private double _lastRepaintTime;
+        
 
         private void OnEnable()
         {
             _gameClock = (FP_Stat_GameClock)target;
             SOReporterDetails = serializedObject.FindProperty("TheReporterDetails");
-            EventDetails = serializedObject.FindProperty("EventDetails");
+            SOStatCollector = serializedObject.FindProperty("StatCollector");
+            //EventDetails = serializedObject.FindProperty("EventDetails");
         }
         private void OnEditorUpdate()
         {
@@ -39,9 +42,12 @@ namespace FuzzPhyte.Utility.Analytics.Editor
             }
                 // Draw the default inspector options
                 //DrawDefaultInspector();
-                serializedObject.Update();
+            serializedObject.Update();
+            EditorGUILayout.PropertyField(SOStatCollector);
             EditorGUILayout.PropertyField(SOReporterDetails);
-            EditorGUILayout.PropertyField(EventDetails);
+            _gameClock.EventDetails = EditorGUILayout.TextField("Event Details", _gameClock.EventDetails);
+            //EditorGUILayout.PropertyField(EventDetails);
+            //multiplier = EditorGUILayout.FloatField(multiplier);
             // Ensure the game clock script is not null
             if (_gameClock == null)
                 return;

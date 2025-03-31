@@ -1,11 +1,8 @@
-using FuzzPhyte.Utility.Analytics;
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
-
 namespace FuzzPhyte.Utility.Analytics
 {
+
+    using System.Collections;
+    using UnityEngine;
     /// <summary>
     /// This is a "special" event as the game clock can be used for other things and also you can report it as a 'stat' but in most cases this is something that has a permanent home
     /// How to Use:
@@ -15,17 +12,17 @@ namespace FuzzPhyte.Utility.Analytics
     ///   If you need to pause: 'PauseTimer()'
     ///   If you need to return to timer from pause: 'UnPauseTimer()'
     ///   When you want to end the timer: 'EndTimer()'
-/// </summary>
-public class FP_Stat_GameClock : FP_Stat_Event
+    /// </summary>
+    public class FP_Stat_GameClock : FP_Stat_Event
     {
         //[Space]
         //[Header("Game Clock Variables")]
+        //public TheReporterDetails
         [HideInInspector]
         public bool StartTimerOnStart=false;
         private bool _paused = false;
         private bool _runningClock = false;
         private bool _timerFinished = false;
-
         public bool Paused { get => _paused; }
         public bool TimerFinished { get => _timerFinished; }
         public bool RunningClock { get => _runningClock; }
@@ -141,7 +138,5 @@ public class FP_Stat_GameClock : FP_Stat_Event
             //account for pause and return
             return (Time.realtimeSinceStartup-_localStartTimeSinceStart)-_runningGamePauseTimeSeconds;
         }
-
-
     }
 }

@@ -1,8 +1,8 @@
-using System.Collections;
-using UnityEngine;
-
 namespace FuzzPhyte.Utility.Analytics
 {
+    using System.Collections;
+    using UnityEngine;
+
     /// <summary>
     /// Event component that goes on a game object that will report a stat event
     /// assume that there's a FP_StatManager.Instance out there
