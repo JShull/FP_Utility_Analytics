@@ -13,9 +13,6 @@
       "url": "https://github.com/jshull/FP_Utility_Analytics.git"
     },
     "dependencies": {
-      "com.unity.test-framework": "1.1.31",
-      "com.unity.mathematics": "1.2.1",
-      "com.unity.textmeshpro": "3.0.9",
       "com.fuzzphyte.utility": "https://github.com/JShull/FP_Utility.git"
     },
     "samples": [
