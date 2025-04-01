@@ -3,7 +3,7 @@ namespace FuzzPhyte.Utility.Analytics.Editor
     using UnityEngine;
     using UnityEditor;
     using System;
-
+    /*
     /// <summary>
     /// Editor class to help with the clock
     /// </summary>
@@ -20,8 +20,12 @@ namespace FuzzPhyte.Utility.Analytics.Editor
         private void OnEnable()
         {
             _gameClock = (FP_Stat_GameClock)target;
-            SOReporterDetails = serializedObject.FindProperty("TheReporterDetails");
-            SOStatCollector = serializedObject.FindProperty("StatCollector");
+            //_gameClock.TheReporterDetails = (FP_Stat_Type)EditorGUILayout.ObjectField("TheReporterDetails", _gameClock.TheReporterDetails, typeof(FP_Stat_Type), false);
+            //_gameClock.StatCollector = (FP_StatReporter)EditorGUILayout.ObjectField("StatCollector", _gameClock.StatCollector, typeof(FP_StatReporter), true);
+            //_gameClock.StatCollector = (FP_Stat_Type)EditorGUILayout.ObjectField("Stat Collector", _gameClock.StatCollector, typeof(FP_Stat_Type), false);
+            //_gameClock.TheReporterDetails = (FP_StatReporter)EditorGUILayout.ObjectField("Reporter Details", _gameClock.TheReporterDetails, typeof(FP_StatReporter), true);
+            //SOReporterDetails = serializedObject.FindProperty("TheReporterDetails");
+            //SOStatCollector = serializedObject.FindProperty("StatCollector");
             //EventDetails = serializedObject.FindProperty("EventDetails");
         }
         private void OnEditorUpdate()
@@ -43,8 +47,10 @@ namespace FuzzPhyte.Utility.Analytics.Editor
                 // Draw the default inspector options
                 //DrawDefaultInspector();
             serializedObject.Update();
-            EditorGUILayout.PropertyField(SOStatCollector);
-            EditorGUILayout.PropertyField(SOReporterDetails);
+            _gameClock.TheReporterDetails = (FP_Stat_Type)EditorGUILayout.ObjectField("TheReporterDetails", _gameClock.TheReporterDetails, typeof(FP_Stat_Type), false);
+            _gameClock.StatCollector = (FP_StatReporter)EditorGUILayout.ObjectField("StatCollector", _gameClock.StatCollector, typeof(FP_StatReporter), true);
+            //EditorGUILayout.PropertyField(SOStatCollector);
+            //EditorGUILayout.PropertyField(SOReporterDetails);
             _gameClock.EventDetails = EditorGUILayout.TextField("Event Details", _gameClock.EventDetails);
             //EditorGUILayout.PropertyField(EventDetails);
             //multiplier = EditorGUILayout.FloatField(multiplier);
@@ -61,6 +67,10 @@ namespace FuzzPhyte.Utility.Analytics.Editor
                 var statReporter = _gameClock.ReturnStatReporter() as FP_StatReporter_Float;
                 if(statReporter != null)
                 {
+                    if (statReporter.TheStatData != null)
+                    {
+                        return;
+                    }
                     if (statReporter.TheStatData.StatSize() > 0)
                     {
                         if (_gameClock.TimerFinished)
@@ -140,4 +150,5 @@ namespace FuzzPhyte.Utility.Analytics.Editor
             }
         }
     }
+    */
 }

@@ -21,7 +21,7 @@ namespace FuzzPhyte.Utility.Analytics
         [Tooltip("Really used to have a base end time not from the events")]
         protected DateTime OverallEndTime;
         [Tooltip("Stack of events")]
-        protected List<StatReportArgs<T>> _statHistory;
+        protected List<StatReportArgs<T>> _statHistory = new List<StatReportArgs<T>>();
         protected Dictionary<StatCalculationType, (double,bool)> _statCalculations;
         
 

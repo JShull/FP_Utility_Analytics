@@ -14,8 +14,7 @@ namespace FuzzPhyte.Utility.Analytics
         public string EventDetails;
         public FP_Stat_Type TheReporterDetails;
         [Header("Variables that are set at runtime")]
-        [SerializeField]
-        protected FP_StatReporter StatCollector;
+        public FP_StatReporter StatCollector;
         
         public virtual void Start()
         {
