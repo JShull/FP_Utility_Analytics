@@ -7,17 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-07-01
+
+### 0.4.0 Added
+
+- [@JShull](https://github.com/jshull)
+  - FP Installer Support
+
 ## [0.3.0] - 2024-05-30
 
 Bringing in Firebase support. This modifies some external requirements now tied to Google and this is currently done through a specific samples folder. This is initially for WebGL using an external repository created by GitHub user 'rotolonico' [Unity Firebase WebGL](https://github.com/rotolonico/FirebaseWebGL/releases) installed into the project. You will also need a configuration file (.json) in any Resources folder in the project.
 
 ### 0.3.0 Added
 
-- Firebase integration for WebGL
-- FP_FirebaseConfig.cs
-  - Assumes a json file is in a Resources folder
-- FP_FireConfig.cs
-  - serializable class for holding config information
+- [@JShull](https://github.com/jshull)
+  - Firebase integration for WebGL
+  - FP_FirebaseConfig.cs
+    - Assumes a json file is in a Resources folder
+  - FP_FireConfig.cs
+    - serializable class for holding config information
 
 ## [0.2.0] - 2023-11-11
 

@@ -1,10 +1,10 @@
 {
     "name": "com.fuzzphyte.utility.analytics",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "displayName": "FP Analytics",
     "description": "FP Analytics is a set of simple statistics that can be used for simple game/event stats. It contains calculators to allow you to combine results from events. You will need to also make sure you have added the https://github.com/JShull/FP_Utility.git to your Unity package manager as a git url.",
-    "unity": "2022.3",
-    "unityRelease": "29f1",
+    "unity": "6000.0",
+    "unityRelease": "1f8",
     "documentationUrl": "https://github.com/jshull/FP_Utility_Analytics/README.md",
     "changelogUrl": "https://github.com/jshull/FP_Utility_Analytics/CHANGELOG.md",
     "licensesUrl": "https://github.com/jshull/FP_Utility_Analytics/LICENSE.md",
@@ -13,7 +13,6 @@
       "url": "https://github.com/jshull/FP_Utility_Analytics.git"
     },
     "dependencies": {
-      "com.fuzzphyte.utility": "https://github.com/JShull/FP_Utility.git"
     },
     "samples": [
       {
