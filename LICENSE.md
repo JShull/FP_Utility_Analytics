@@ -173,10 +173,10 @@ In no event shall John B. Shull, FuzzPhyte LLC, contributors, licensors, or copy
 
 For commercial licensing, proprietary use, institutional use, grant-funded production use, or other permissions outside the GPLv3-or-later license path, contact:
 
-John B. Shull
-FuzzPhyte / FuzzPhyte LLC
-Email: [INSERT CONTACT EMAIL]
-Website: [INSERT WEBSITE OR GITHUB PROFILE]
+John B. Shull / FuzzPhyte / FuzzPhyte LLC
+
+* [Email: Me-JShull](mailto:jshull@fuzzphyte.com)
+* [GitHub.com/JShull](https://github.com/jshull)
 
 ---
 
