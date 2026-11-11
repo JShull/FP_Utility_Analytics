@@ -1,5 +1,7 @@
 # FP Utility Analytics
 
+See the proposed [Data Workbench implementation plan](DataWorkbenchPlan.md) for disk-backed sheets, configurable plots and Biologging TDR integration. This is planned work; the existing event/stat features are described below.
+
 FP Utility Analytics is a lightweight stat collection and calculation package for
 Unity projects. It is designed for simple gameplay, UI, and event analytics where
 you want local stat histories, summary calculations, and ScriptableObject metadata
