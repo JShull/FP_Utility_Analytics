@@ -170,6 +170,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             return new FPWorkbenchSeriesCache(dataset, target, settings, levels, first, last, origin);
         }
 
+        /// <summary>Reads only cached endpoint records; never reparses CSV or materializes the selected range.</summary>
+        public Task<FPWorkbenchSeriesRowExtent> ReadRowExtentAsync(long firstRow, long endRow, CancellationToken cancellation = default)
+        {
+            if (firstRow < 0 || endRow <= firstRow || endRow > RowCount) throw new ArgumentOutOfRangeException("Choose a nonempty source row range inside this series.");
+            return Task.Run(() => {
+                cancellation.ThrowIfCancellationRequested(); dataset.ValidateUnchanged();
+                using var reader = new BinaryReader(File.OpenRead(Path.Combine(DirectoryPath, "points.bin")));
+                if (reader.BaseStream.Length != checked(RowCount * PointBytes)) throw new InvalidDataException("Series point payload length changed.");
+                var first = ReadAt(reader, firstRow); var last = endRow == firstRow + 1 ? first : ReadAt(reader, endRow - 1);
+                if (first.Row != firstRow || last.Row != endRow - 1 || !FPWorkbenchSeriesBinding.Finite(first.X) || !FPWorkbenchSeriesBinding.Finite(last.X) || last.X < first.X)
+                    throw new InvalidDataException("Cached row identity/X endpoints differ from the verified series.");
+                cancellation.ThrowIfCancellationRequested(); dataset.ValidateUnchanged();
+                return new FPWorkbenchSeriesRowExtent(dataset.DatasetId, firstRow, endRow, first.X, last.X, endRow == firstRow + 1 ? 1 : 2);
+            }, cancellation);
+        }
         public Task<FPWorkbenchSeriesView> QueryAsync(double startX, double endX, int desiredBins = 512, CancellationToken cancellation = default)
         {
             if (!FPWorkbenchSeriesBinding.Finite(startX) || !FPWorkbenchSeriesBinding.Finite(endX) || endX <= startX || desiredBins < 1 || desiredBins > 4096) throw new ArgumentException("A finite increasing range and 1–4096 bins are required.");

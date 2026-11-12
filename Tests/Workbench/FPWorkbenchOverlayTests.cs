@@ -36,6 +36,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             var leftRange = axes.Resolve(left, settings, false); var rightRange = axes.Resolve(left, settings, true);
             Assert.That(leftRange.Minimum, Is.EqualTo(100)); Assert.That(leftRange.Maximum, Is.EqualTo(200));
             Assert.That(rightRange.Minimum, Is.EqualTo(-200)); Assert.That(rightRange.Maximum, Is.EqualTo(-100));
+            axes.RightSettings.YScale = FPWorkbenchAxisScale.Log10; Assert.Throws<ArgumentException>(() => axes.Resolve(left, settings, true));
+            axes.RightSettings.YScale = FPWorkbenchAxisScale.Linear;
             axes.RightSettings.LockY = true; axes.RightSettings.MinimumY = -1000; axes.RightSettings.MaximumY = 1000;
             Assert.That(axes.Resolve(left, settings, true).Maximum, Is.EqualTo(1000));
             Assert.That(axes.Resolve(left, settings, true, false).Maximum, Is.EqualTo(-100));

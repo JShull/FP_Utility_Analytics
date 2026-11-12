@@ -15,10 +15,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void RestoreColumns(Sheet sheet)
         {
             string json = EditorPrefs.GetString(ColumnPreferenceKey(sheet.Dataset.DatasetId), "");
-            try { sheet.Columns = json.Length > 0 && json.Length <= 65536 ? JsonUtility.FromJson<FPWorkbenchColumnLayout>(json) : null; }
+            try { sheet.Columns = json.Length > 0 && json.Length <= FPWorkbenchDocumentFile.MaximumDocumentBytes ? JsonUtility.FromJson<FPWorkbenchColumnLayout>(json) : null; }
             catch (ArgumentException) { sheet.Columns = null; }
             if (sheet.Columns == null || sheet.Columns.Version < 1 || sheet.Columns.Version > 2) sheet.Columns = new FPWorkbenchColumnLayout();
             sheet.Columns.EnsureColumns(TableColumnCount(sheet.Dataset));
+            try { sheet.Columns.Projection ??= new FPWorkbenchColumnProjection(); sheet.Columns.Projection.Validate(); }
+            catch (System.IO.InvalidDataException) { sheet.Columns.Projection = new FPWorkbenchColumnProjection(); }
         }
         private static void SaveColumns(Sheet sheet)
         {

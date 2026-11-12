@@ -49,7 +49,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 Id = sheet.Id, Name = sheet.Name, SourcePath = sheet.Dataset.SourcePath, CacheDirectory = sheet.Cache, DatasetId = sheet.Dataset.DatasetId,
                 FirstRow = sheet.FirstRow, FirstColumn = sheet.FirstColumn, PlotColumn = series == null ? sheet.PlotColumn : PlotColumnForBinding(sheet, binding),
-                Import = sheet.Dataset.ImportProfile, Binding = binding, Plot = sheet.Plot, Columns = sheet.Columns, ShowPlot = sheet.ShowPlot, ShowOriginal = sheet.ShowOriginal
+                Selection = sheet.Selection, Import = sheet.Dataset.ImportProfile, Binding = binding, Plot = sheet.Plot, Columns = sheet.Columns, ShowPlot = sheet.ShowPlot, ShowOriginal = sheet.ShowOriginal
             };
         }
         private void SaveWorkbook(string path)
@@ -104,16 +104,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 {
                     Id = saved.Id, Name = saved.Name, Source = data.SourcePath, Cache = data.CacheDirectory, Dataset = data,
                     FirstRow = saved.FirstRow, FirstColumn = saved.FirstColumn, PlotColumn = saved.PlotColumn, Binding = saved.Binding,
-                    Plot = saved.Plot, ShowPlot = saved.ShowPlot, ShowOriginal = saved.ShowOriginal, Columns = saved.Columns, Lifetime = new CancellationTokenSource(),
+                    Selection = saved.Selection, RangeAnchorRow = saved.Selection?.FirstRow ?? 0,
+                    RangeAnchorColumn = saved.Selection?.ColumnIds[0], Plot = saved.Plot, ShowPlot = saved.ShowPlot, ShowOriginal = saved.ShowOriginal, Columns = saved.Columns, Lifetime = new CancellationTokenSource(),
                     ColumnNames = new string[data.ColumnCount]
                 };
                 for (int c = 0; c < sheet.ColumnNames.Length; c++) sheet.ColumnNames[c] = (c + 1) + ": " + data.GetColumnName(c);
                 candidate.Add(sheet);
             }
+            CancelSelectionFrame();
+            CancelClipboard();
             Cancel(pageCancel); pageCancel = null;
             CancelVirtualPage();
             Observe(pageWork); pageWork = null;
-            foreach (var sheet in sheets) { sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; Cancel(sheet.Lifetime); Observe(sheet.Loading); }
+            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; Cancel(sheet.Lifetime); Observe(sheet.Loading); }
             if (sizingSheet != null) { SaveColumns(sizingSheet); sizingSheet = null; sizingColumn = -1; GUIUtility.hotControl = 0; }
             pendingLinkedDataset = null; pendingLinkedColumns = null; linkedDataset = null; linkedColumns = Array.Empty<int>(); linkedRow = -1;
             CloseOwnedFigures();
@@ -143,6 +146,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             }
             if (workbookLoad != null || workbookSave != null)
             { if (GUILayout.Button("Cancel workbook operation")) workbookCancel.Cancel(); }
+            if (GUILayout.Button("Recover moved/missing workbook sources…")) FPWorkbenchRecoveryWindow.Open();
             DrawSavedFigures();
             DrawRegisteredSources();
         }

@@ -9,7 +9,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     using UnityEngine;
 
     /// <summary>Snapshot histogram viewer. Serialized metadata rebuilds bounded products after reload.</summary>
-    public sealed class FPWorkbenchHistogramWindow : EditorWindow
+    public sealed partial class FPWorkbenchHistogramWindow : EditorWindow
     {
         [SerializeField] private string cache, datasetId, corrections, columnName;
         [SerializeField] private string workbook, figureId = Guid.NewGuid().ToString("N");
@@ -49,25 +49,32 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void OnEnable()
         {
             minSize = new Vector2(560, 360); wantsMouseMove = true; cancellation = new CancellationTokenSource(); EditorApplication.update += Tick;
+            try { RestorePublishedQuery(); } catch (Exception ex) { error = ex.Message; return; }
             if (!string.IsNullOrEmpty(cache)) opening = FPWorkbenchCsvDataset.OpenAsync(cache, cancellation.Token);
         }
         private void OnDisable()
         {
-            if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure());
+            DisposeHistogramUndo();
+            try { if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure()); }
+            catch (Exception ex) { error = ex.Message; }
             EditorApplication.update -= Tick; cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
             Observe(opening); Observe(fitting); Observe(building); opening = null; fitting = null; building = null;
             dataset = null; program = null; snapshot = null; result = null;
         }
-        internal FPWorkbenchFigureDocument DescribeFigure() => new FPWorkbenchFigureDocument
+        internal FPWorkbenchFigureDocument DescribeFigure()
+        {
+            var shown = PublishedHistogramSettings() ?? CaptureHistogramSettings();
+            return new FPWorkbenchFigureDocument
         {
             Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram,
-            HistogramColumn = string.IsNullOrEmpty(derivedId) ? column : 0, HistogramDerivedId = derivedId, HistogramBins = bins, FirstRow = firstRow, EndRow = endRow, Minimum = minimum, Maximum = maximum,
-            Density = density, Grid = grid, FitHistogramOnOpen = fitOnOpen, InvalidPolicy = invalidPolicy,
+            HistogramColumn = string.IsNullOrEmpty(derivedId) ? column : 0, HistogramDerivedId = derivedId, HistogramBins = shown.Bins, FirstRow = shown.FirstRow, EndRow = shown.EndRow, Minimum = shown.Minimum, Maximum = shown.Maximum,
+            Density = density, Grid = grid, FitHistogramOnOpen = shown.FitOnOpen, InvalidPolicy = shown.InvalidPolicy,
             HasCorrectionSnapshot = !string.IsNullOrEmpty(corrections),
             HasCalculationSnapshot = !string.IsNullOrEmpty(calculations),
             CalculationSnapshot = string.IsNullOrEmpty(calculations) ? null : JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations),
             CorrectionSnapshot = string.IsNullOrEmpty(corrections) ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(corrections)
         };
+        }
         internal static FPWorkbenchHistogramWindow OpenSaved(string workbookId, FPWorkbenchCsvDataset source, FPWorkbenchFigureDocument saved)
         {
             saved.Validate(); var window = CreateInstance<FPWorkbenchHistogramWindow>();
@@ -97,13 +104,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void BeginFit()
         {
             if (Busy || dataset == null) return;
-            try { Prepare(); fitting = FPWorkbenchReduction.CalculateAsync(dataset, program, column, !string.IsNullOrEmpty(derivedId), firstRow, endRow, invalidPolicy, snapshot, cancellation: cancellation.Token); }
+            try { Prepare(); recordHistogramFit = result != null; fitting = FPWorkbenchReduction.CalculateAsync(dataset, program, column, !string.IsNullOrEmpty(derivedId), firstRow, endRow, invalidPolicy, snapshot, cancellation: cancellation.Token); }
             catch (Exception ex) { error = ex.Message; }
         }
         private void BeginBuild()
         {
             if (Busy || dataset == null) return;
-            try { Prepare(); building = FPWorkbenchHistogram.CalculateAsync(dataset, program, column, !string.IsNullOrEmpty(derivedId), firstRow, endRow, minimum, maximum, bins, invalidPolicy, snapshot, cancellation: cancellation.Token); }
+            try { Prepare(); buildingHistogramPolicy = invalidPolicy; building = FPWorkbenchHistogram.CalculateAsync(dataset, program, column, !string.IsNullOrEmpty(derivedId), firstRow, endRow, minimum, maximum, bins, invalidPolicy, snapshot, cancellation: cancellation.Token); }
             catch (Exception ex) { error = ex.Message; }
         }
         private void Tick()
@@ -122,22 +129,24 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 {
                     var extent = task.GetAwaiter().GetResult();
                     if (extent.Count == 0) throw new InvalidOperationException("No valid numeric samples in this range. Choose explicit limits or another column.");
+                    string beforeFit = HistogramSettingsJson();
                     minimum = extent.Minimum; maximum = extent.Maximum;
                     if (maximum == minimum) { double pad = Math.Max(1, Math.Abs(minimum) * 1e-6); minimum -= pad; maximum += pad; }
-                    fitOnOpen = false; BeginBuild();
+                    fitOnOpen = false; if (recordHistogramFit) { Undo.IncrementCurrentGroup(); RecordHistogramSettings(beforeFit); } BeginBuild();
                 }
                 catch (Exception ex) { error = ex.Message; } changed = true;
             }
             if (building != null && building.IsCompleted)
             {
                 var task = building; building = null;
-                try { result = task.GetAwaiter().GetResult(); fitOnOpen = false; }
+                try { result = task.GetAwaiter().GetResult(); fitOnOpen = false; PublishHistogramSettings(); }
                 catch (Exception ex) { error = ex.Message; } changed = true;
             }
             if (changed) Repaint();
         }
         private void OnGUI()
         {
+            string beforeSettings = HistogramSettingsJson();
             GUILayout.Label(columnName + (string.IsNullOrEmpty(derivedId) ? "" : " • Calculated") + (string.IsNullOrEmpty(corrections) ? " • Original snapshot" : " • Effective snapshot"), EditorStyles.boldLabel);
             if (equationLabel != null) GUILayout.Label(equationLabel, EditorStyles.miniLabel);
             using (new EditorGUI.DisabledScope(Busy || dataset == null))
@@ -159,6 +168,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 density = GUILayout.Toggle(density, "Density", EditorStyles.toolbarButton); grid = GUILayout.Toggle(grid, "Grid", EditorStyles.toolbarButton);
                 if (Busy) { GUILayout.Label("Reading source in background…", EditorStyles.miniLabel); if (GUILayout.Button("Cancel")) cancellation.Cancel(); }
             }
+            RecordHistogramSettings(beforeSettings);
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Warning);
             if (result == null) { EditorGUILayout.HelpBox("Build a histogram to display counts. Source files remain unchanged.", MessageType.Info); return; }
             GUILayout.Label($"Displayed rows [{result.FirstRow:N0}, {result.EndRow:N0}) • {result.Counts.Count} bins • included {result.IncludedCount:N0} • invalid {result.InvalidCount:N0} • below {result.UnderflowCount:N0} • above {result.OverflowCount:N0}", EditorStyles.miniLabel);

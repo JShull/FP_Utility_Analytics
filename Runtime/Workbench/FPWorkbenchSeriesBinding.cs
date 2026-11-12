@@ -26,6 +26,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 (XMode == FPWorkbenchXMode.UtcDateTime && (DateColumn < 0 || DateColumn >= columns || string.IsNullOrEmpty(UtcFormat) || UtcFormat.Length > 256)) ||
                 double.IsNaN(MaximumGap) || double.IsInfinity(MaximumGap) || MaximumGap < 0)
                 throw new ArgumentException("Invalid series columns, UTC format or gap bound.");
+            if (XMode == FPWorkbenchXMode.UtcDateTime) FPWorkbenchUtcTimestamp.ValidateFormat(UtcFormat);
             return (FPWorkbenchSeriesBinding)MemberwiseClone();
         }
         public int ResolveDerivedY(FPWorkbenchFormulaProgram calculations)
@@ -51,11 +52,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     throw new InvalidDataException("Invalid numeric X at logical row " + index + ". Choose a different binding or correct it explicitly.");
                 return value;
             }
-            if (!DateTime.TryParseExact(row[DateColumn].Trim() + " " + row[XColumn].Trim(), UtcFormat,
-                CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var time))
+            if (!FPWorkbenchUtcTimestamp.TryRead(row[DateColumn], row[XColumn], UtcFormat, out long ticks))
                 throw new InvalidDataException("UTC date/time does not match the declared format at logical row " + index + ".");
-            if (index == 0) originTicks = time.Ticks;
-            return (time.Ticks - originTicks) / (double)TimeSpan.TicksPerSecond;
+            if (index == 0) originTicks = ticks;
+            return (ticks - originTicks) / (double)TimeSpan.TicksPerSecond;
         }
         internal static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
@@ -93,6 +93,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             EndIndex = other.EndIndex; LastX = other.LastX; LastY = other.LastY;
             Count += other.Count; InvalidCount += other.InvalidCount; GapCount += other.GapCount;
         }
+    }
+
+    /// <summary>Inclusive X endpoints for a half-open original-source row range. Equal X neighbors may lie outside that row range.</summary>
+    public readonly struct FPWorkbenchSeriesRowExtent
+    {
+        public string DatasetId { get; }
+        public long FirstRow { get; }
+        public long EndRow { get; }
+        public double FirstX { get; }
+        public double LastX { get; }
+        public int RecordsRead { get; }
+        internal FPWorkbenchSeriesRowExtent(string id, long first, long end, double firstX, double lastX, int read)
+        { DatasetId = id; FirstRow = first; EndRow = end; FirstX = firstX; LastX = lastX; RecordsRead = read; }
     }
 
     public sealed class FPWorkbenchSeriesView

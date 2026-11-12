@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Runtime double linear/Log10 axis transforms and bounded original-unit tick generation as the numerical foundation for forthcoming logarithmic plot controls.
+
+- Shared deterministic complete-date UTC parsing for scalar plots/alignment and early workbook binding validation, rejecting implicit current-date/timezone-dependent declarations.
+
+- Histogram settings Undo/Redo with background query restoration and published-query persistence, preventing rejected drafts from replacing valid saved/reloaded figures.
+
+- Frame selected table rows in the current scalar/shared figure using bounded cached endpoint reads, with preserved bindings/locked Y limits and stale-request protection.
+
+- Exact cross-sheet composite UTC date/time alignment with explicit per-source formats, 100 ns integer keys, frozen date/time corrections and saved recipe/source-contributor support.
+
+- Materialized CSV export directly from stable table selections, preserving selected nonadjacent column order and frozen source-row/formula/correction inputs.
+
+- Stable-ID table range selection via click/Shift-click, workbook persistence and bounded background quoted-TSV copying with optional headers and Original/Effective/calculated values.
+
+- Editor table column hide/restore and move-left/right actions with stable identity paging, per-sheet workbook/local persistence, layout Undo and linked-source reveal through hidden/reordered columns.
+
+- Runtime stable-identity column projection and bounded noncontiguous virtual-table page reads, preserving original/corrected/calculated cell mappings for forthcoming table hide/reorder controls.
+
+- Detached workbook source recovery for moved identical CSVs and missing indexes, with background identity verification/reindexing, preserved annotations/figures and separate recovered-copy saving.
+
 - Reusable bounded `.fpplot` presentation presets for shared 2D figure settings, preserving target viewport/data bindings and using existing presentation Undo.
 
 - Calculated-column X/Y selection for aligned scatter plots, using independently captured source formulas that persist in saved recipes.

@@ -40,8 +40,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             }
             if (!any) return new FPWorkbenchAxisRange(false, 0, 1);
             if (useLocks && settings.LockY) { min = settings.MinimumY; max = settings.MaximumY; }
-            if (min == max) { double pad = Math.Max(1, Math.Abs(min) * .01); min -= pad; max += pad; }
+            if (min == max) FPWorkbenchAxis.ExpandConstant(min, settings.YScale, out min, out max);
             if (!Finite(min) || !Finite(max) || max <= min || !Finite(max - min)) throw new ArgumentException("Axis needs finite positive Y span; choose explicit limits for this range.");
+            FPWorkbenchAxis.Validate(min, max, settings.YScale);
             return new FPWorkbenchAxisRange(true, min, max);
         }
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);

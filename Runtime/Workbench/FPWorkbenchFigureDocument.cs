@@ -114,6 +114,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     if (AlignedRecipe == null || HasCorrectionSnapshot || HasCalculationSnapshot) throw new InvalidDataException("Aligned figures need their two-source recipe, not outer single-source snapshots.");
                     AlignedRecipe.Validate(); if (AlignedRecipe.LeftDatasetId != DatasetId) throw new InvalidDataException("Aligned primary source differs from its recipe.");
                 }
+                if (Plot.XScale == FPWorkbenchAxisScale.Log10 && Plot.StartX <= 0 || Plot.YScale == FPWorkbenchAxisScale.Log10 && Plot.MinimumY <= 0)
+                    throw new InvalidDataException("Logarithmic scatter bounds must be positive.");
                 if (!Finite(Plot.EndX - Plot.StartX) || Plot.MaximumY <= Plot.MinimumY || !Finite(Plot.MaximumY - Plot.MinimumY)) throw new InvalidDataException("Scatter viewport requires finite positive X/Y spans.");
                 if ((Binding.HasDerivedX || Binding.HasDerivedY) && !HasCalculationSnapshot) throw new InvalidDataException("Calculated scatter axes require their formula snapshot.");
                 var color = Colors[0]; if (!Channel(color.r) || !Channel(color.g) || !Channel(color.b) || !Channel(color.a)) throw new InvalidDataException("Scatter color must be finite and normalized.");

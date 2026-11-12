@@ -11,14 +11,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     using UnityEngine;
 
     public enum FPWorkbenchAlignmentMode { SharedSourceRows, ExactKey }
-    public enum FPWorkbenchAlignmentKeyKind { OrdinalText, Decimal }
+    public enum FPWorkbenchAlignmentKeyKind { OrdinalText, Decimal, UtcDateTime }
     public enum FPWorkbenchDuplicateKeyPolicy { Reject, ReportAmbiguous }
     [Serializable] public sealed class FPWorkbenchAlignmentOptions
     {
         public FPWorkbenchAlignmentMode Mode = FPWorkbenchAlignmentMode.ExactKey;
         public FPWorkbenchAlignmentKeyKind KeyKind;
         public FPWorkbenchDuplicateKeyPolicy Duplicates = FPWorkbenchDuplicateKeyPolicy.Reject;
-        public int LeftKeyColumn, RightKeyColumn;
+        public int LeftKeyColumn, RightKeyColumn, LeftDateColumn, RightDateColumn;
+        public string LeftUtcFormat = "dd.MM.yyyy HH:mm:ss.ffffff", RightUtcFormat = "dd.MM.yyyy HH:mm:ss.ffffff";
         public string KeyDomain = "", LeftUnits = "1", RightUnits = "1";
         internal FPWorkbenchAlignmentOptions Copy()
         {
@@ -28,11 +29,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (Mode == FPWorkbenchAlignmentMode.ExactKey)
             {
                 if (string.IsNullOrWhiteSpace(KeyDomain)) throw new ArgumentException("Declare the common key domain; it is never inferred from headers.");
+                if (KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime) { FPWorkbenchUtcTimestamp.ValidateFormat(LeftUtcFormat); FPWorkbenchUtcTimestamp.ValidateFormat(RightUtcFormat); }
                 if (KeyKind == FPWorkbenchAlignmentKeyKind.Decimal && !FPWorkbenchFormulaUnits.Parse(LeftUnits).Equivalent(FPWorkbenchFormulaUnits.Parse(RightUnits)))
                     throw new ArgumentException("Decimal keys require identical declared symbolic units; no implicit conversion.");
             }
             return (FPWorkbenchAlignmentOptions)MemberwiseClone();
         }
+
     }
     public readonly struct FPWorkbenchAlignedRows
     {
@@ -74,6 +77,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             }
             else if (policy.LeftKeyColumn < 0 || policy.LeftKeyColumn >= left.ColumnCount || policy.RightKeyColumn < 0 || policy.RightKeyColumn >= right.ColumnCount)
                 throw new ArgumentOutOfRangeException("Choose physical key columns from both sources.");
+            if (policy.Mode == FPWorkbenchAlignmentMode.ExactKey && policy.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime &&
+                (policy.LeftDateColumn < 0 || policy.LeftDateColumn >= left.ColumnCount || policy.RightDateColumn < 0 || policy.RightDateColumn >= right.ColumnCount))
+                throw new ArgumentOutOfRangeException("Choose physical UTC date columns from both sources.");
             string key = MakeKey(left, right, policy, leftChanges?.Fingerprint ?? "original", rightChanges?.Fingerprint ?? "original");
             return Task.Run(() => Build(left, right, policy, leftChanges, rightChanges, key, cancellation), cancellation);
         }
@@ -109,8 +115,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                         for (long row = 0; row < left.RowCount; row++) { token.ThrowIfCancellationRequested(); output.Write(row); output.Write(row); metadata.MatchedPairs++; }
                     else
                     {
-                        using var a = new Cursor(left, options.LeftKeyColumn, options.KeyKind, leftChanges, token);
-                        using var b = new Cursor(right, options.RightKeyColumn, options.KeyKind, rightChanges, token);
+                        using var a = new Cursor(left, options.LeftKeyColumn, options.KeyKind, leftChanges, token, options.LeftDateColumn, options.LeftUtcFormat);
+                        using var b = new Cursor(right, options.RightKeyColumn, options.KeyKind, rightChanges, token, options.RightDateColumn, options.RightUtcFormat);
                         while (a.HasValue || b.HasValue)
                         {
                             token.ThrowIfCancellationRequested(); int compare = !a.HasValue ? 1 : !b.HasValue ? -1 : a.Current.Compare(b.Current);
@@ -199,6 +205,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 if (string.IsNullOrEmpty(text) || numeric && !decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number)) throw new InvalidDataException("Missing, invalid or out-of-range alignment key.");
                 if (numeric && Normalize(text) != Normalize(number.ToString("G29", CultureInfo.InvariantCulture))) throw new InvalidDataException("Decimal alignment key would require rounding; use an exact text key or an explicitly transformed key.");
             }
+            public Key(long utcTicks) { text = null; numeric = true; number = utcTicks; }
             private static string Normalize(string value)
             {
                 value = value.Trim(); bool negative = value.StartsWith("-", StringComparison.Ordinal);
@@ -218,14 +225,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         }
         private sealed class Cursor : IDisposable
         {
-            private readonly FPWorkbenchCsvDataset data; private readonly int column; private readonly FPWorkbenchAlignmentKeyKind kind;
+            private readonly FPWorkbenchCsvDataset data; private readonly int column, dateColumn; private readonly string utcFormat; private readonly FPWorkbenchAlignmentKeyKind kind;
             private readonly FPWorkbenchChangeSnapshot changes; private readonly CancellationToken token; private readonly Stream source; private readonly FPWorkbenchCsvRecords parser;
             private long next, row; private bool prior; private Key previous;
             public bool HasValue { get; private set; }
             public Key Current { get; private set; }
-            public Cursor(FPWorkbenchCsvDataset data, int column, FPWorkbenchAlignmentKeyKind kind, FPWorkbenchChangeSnapshot changes, CancellationToken token)
+            public Cursor(FPWorkbenchCsvDataset data, int column, FPWorkbenchAlignmentKeyKind kind, FPWorkbenchChangeSnapshot changes, CancellationToken token, int dateColumn, string utcFormat)
             {
-                this.data = data; this.column = column; this.kind = kind; this.changes = changes; this.token = token;
+                this.dateColumn = dateColumn; this.utcFormat = utcFormat; this.data = data; this.column = column; this.kind = kind; this.changes = changes; this.token = token;
                 source = data.OpenReaderAt(0); parser = data.Parser(source, token);
                 try { Advance(); } catch { source.Dispose(); throw; }
             }
@@ -233,10 +240,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             {
                 token.ThrowIfCancellationRequested(); HasValue = next < data.RowCount; if (!HasValue) return;
                 var record = parser.Read(); if (record == null || record.Length != data.ColumnCount) throw new InvalidDataException("Alignment source differs from its index.");
-                row = next++; string text = record[column];
-                if (changes != null && changes.TryGet(data.Cell(row, column), text, out string effective, out bool masked))
-                { if (masked) throw new InvalidDataException("Alignment key is masked at source row " + row + "."); text = effective; }
-                Current = new Key(text, kind);
+                row = next++;
+                string Cell(int c) {
+                    string text = record[c];
+                    if (changes != null && changes.TryGet(data.Cell(row, c), text, out string effective, out bool masked)) {
+                        if (masked) throw new InvalidDataException("Alignment key is masked at source row " + row + "."); text = effective;
+                    }
+                    return text;
+                }
+                if (kind == FPWorkbenchAlignmentKeyKind.UtcDateTime) {
+                    if (!FPWorkbenchUtcTimestamp.TryRead(Cell(dateColumn), Cell(column), utcFormat, out long ticks)) throw new InvalidDataException("UTC alignment timestamp does not match its declared format at source row " + row + ".");
+                    Current = new Key(ticks);
+                } else Current = new Key(Cell(column), kind);
                 if (prior && previous.Compare(Current) > 0) throw new InvalidDataException("Alignment keys decrease at source row " + row + "; build an explicit sorted key index first.");
                 previous = Current; prior = true;
             }

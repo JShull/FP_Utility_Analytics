@@ -33,7 +33,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     summary = session.View; summarySheet = sheet.Id; requestedSeries = session.Series;
                 }
             }
-            return changed;
+            return changed | TickSelectionFrame();
         }
         private void StartSeries(Sheet sheet, bool resetView)
         {
@@ -112,7 +112,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (sheet.Binding.XMode == FPWorkbenchXMode.UtcDateTime)
             {
                 sheet.Binding.DateColumn = EditorGUILayout.Popup("UTC date column", sheet.Binding.DateColumn, sheet.ColumnNames);
-                sheet.Binding.UtcFormat = EditorGUILayout.TextField("UTC format", sheet.Binding.UtcFormat);
+                sheet.Binding.UtcFormat = EditorGUILayout.TextField(new GUIContent("UTC format", FPWorkbenchPlotView.UtcFormatTooltip), sheet.Binding.UtcFormat);
             }
             sheet.Binding.MaximumGap = EditorGUILayout.DoubleField(new GUIContent("Gap threshold", "0 disables gap detection. Units follow X; UTC uses seconds."), sheet.Binding.MaximumGap);
             if (GUILayout.Button("Apply binding / build plot")) StartSeries(sheet, true);
@@ -142,6 +142,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     sheet.Plot.MinimumY = EditorGUILayout.DoubleField("Y minimum", sheet.Plot.MinimumY);
                     sheet.Plot.MaximumY = EditorGUILayout.DoubleField("Y maximum", sheet.Plot.MaximumY);
                 }
+                using (new UnityEditor.EditorGUI.DisabledScope(sheet.Selection == null || sheet.FigureLease == null || sheet.FigureLease.Session.IsBuilding))
+                    if (GUILayout.Button(new GUIContent("Frame selected table rows", "Navigate X to selected row timestamps; does not filter samples or change the bound columns. Equal-X neighbors may be visible."))) BeginSelectionFrame(sheet);
                 if (GUILayout.Button("Fit X")) sheet.Plot.Fit(sheet.Series.FirstX, sheet.Series.LastX);
                 if (GUILayout.Button("Fit Y") && summary != null && summarySheet == sheet.Id && !double.IsNaN(summary.Minimum))
                 { sheet.Plot.MinimumY = summary.Minimum; sheet.Plot.MaximumY = summary.Maximum; }

@@ -20,13 +20,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             {
                 Undo.IncrementCurrentGroup(); Begin();
                 settings.Title = "Depth"; settings.XLabel = "Time (s)"; settings.YLabel = "Depth (m)";
+                settings.XScale = FPWorkbenchAxisScale.Log10; settings.YScale = FPWorkbenchAxisScale.Log10;
                 settings.Style = FPWorkbenchPlotStyle.Points; settings.MarkerSize = 8; settings.Grid = false; End();
                 settings.StartX = 50; settings.EndX = 75; settings.MinimumY = -10; settings.MaximumY = 50;
                 Undo.FlushUndoRecordObjects(); Undo.PerformUndo();
+                Assert.That(settings.XScale, Is.EqualTo(FPWorkbenchAxisScale.Linear));
                 Assert.That(settings.Title, Is.Empty); Assert.That(settings.Style, Is.EqualTo(FPWorkbenchPlotStyle.Line));
                 Assert.That(settings.StartX, Is.EqualTo(50)); Assert.That(settings.EndX, Is.EqualTo(75));
                 Assert.That(settings.MinimumY, Is.EqualTo(-10)); Assert.That(settings.MaximumY, Is.EqualTo(50));
-                Undo.PerformRedo(); Assert.That(settings.Title, Is.EqualTo("Depth")); Assert.That(settings.MarkerSize, Is.EqualTo(8));
+                Undo.PerformRedo(); Assert.That(settings.XScale, Is.EqualTo(FPWorkbenchAxisScale.Log10)); Assert.That(settings.Title, Is.EqualTo("Depth")); Assert.That(settings.MarkerSize, Is.EqualTo(8));
                 Assert.That(settings.YLabel, Is.EqualTo("Depth (m)")); Assert.That(settings.Grid, Is.False);
                 var other = (IDisposable)Activator.CreateInstance(type, new object[] { (Action)(() => { }) });
                 try

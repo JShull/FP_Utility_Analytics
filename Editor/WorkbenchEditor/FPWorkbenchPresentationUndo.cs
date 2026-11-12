@@ -16,19 +16,20 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [Serializable] private sealed class Payload
         {
             public string Title, XLabel, YLabel;
+            public FPWorkbenchAxisScale XScale, YScale;
             public FPWorkbenchPlotStyle Style;
             public float LineWidth, MarkerSize;
             public bool Grid, InvertY, LockY;
             public double XTickSpacing, YTickSpacing, MinimumY, MaximumY;
             public Payload(FPWorkbenchPlotSettings s)
             {
-                Title = s.Title; XLabel = s.XLabel; YLabel = s.YLabel; Style = s.Style;
+                XScale = s.XScale; YScale = s.YScale; Title = s.Title; XLabel = s.XLabel; YLabel = s.YLabel; Style = s.Style;
                 LineWidth = s.LineWidth; MarkerSize = s.MarkerSize; Grid = s.Grid; InvertY = s.InvertY; LockY = s.LockY;
                 XTickSpacing = s.XTickSpacing; YTickSpacing = s.YTickSpacing; MinimumY = s.MinimumY; MaximumY = s.MaximumY;
             }
             public void Apply(FPWorkbenchPlotSettings s)
             {
-                s.Title = Title; s.XLabel = XLabel; s.YLabel = YLabel; s.Style = Style;
+                s.XScale = XScale; s.YScale = YScale; s.Title = Title; s.XLabel = XLabel; s.YLabel = YLabel; s.Style = Style;
                 s.LineWidth = LineWidth; s.MarkerSize = MarkerSize; s.Grid = Grid; s.InvertY = InvertY; s.LockY = LockY;
                 s.XTickSpacing = XTickSpacing; s.YTickSpacing = YTickSpacing;
                 // Automatic limits track the current view; only authored locked limits are restored.

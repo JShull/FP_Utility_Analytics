@@ -8,9 +8,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
 
     internal static class FPWorkbenchPlotView
     {
+        public const string UtcFormatTooltip = "Complete UTC date: dd.MM.yyyy, yyyy-MM-dd, MM/dd/yyyy, dd/MM/yyyy or yyyy/MM/dd; then one space and HH:mm:ss, optionally . or , plus 1–7 required f digits. No missing-year/current-date or timezone inference.";
         public static void LabelControls(FPWorkbenchPlotSettings settings)
         {
             FPWorkbenchPlotPresetGUI.Draw(settings);
+            settings.XScale = (FPWorkbenchAxisScale)EditorGUILayout.EnumPopup("X scale", settings.XScale);
+            settings.YScale = (FPWorkbenchAxisScale)EditorGUILayout.EnumPopup("Y scale", settings.YScale);
+            EditorGUILayout.LabelField("Log10 requires positive limits; grid spacing is in decades.", EditorStyles.miniLabel);
             settings.Title = EditorGUILayout.TextField("Title", settings.Title);
             settings.XLabel = EditorGUILayout.TextField("X label", settings.XLabel);
             settings.YLabel = EditorGUILayout.TextField("Y label", settings.YLabel);
@@ -73,26 +77,32 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             double minimum = settings.LockY ? settings.MinimumY : (overlay?.Minimum ?? summary.Minimum), maximum = settings.LockY ? settings.MaximumY : (overlay?.Maximum ?? summary.Maximum);
             if (overlay != null && axes != null) { minimum = leftRange.Minimum; maximum = leftRange.Maximum; }
             if (double.IsNaN(minimum) || double.IsInfinity(minimum) || double.IsNaN(maximum) || double.IsInfinity(maximum) || maximum < minimum) { GUI.Label(rect, "Enter finite increasing Y limits."); return; }
-            if (maximum == minimum) { minimum -= Math.Max(1, Math.Abs(minimum) * .01); maximum += Math.Max(1, Math.Abs(maximum) * .01); }
-            float Y(double v) { double fraction = (v - minimum) / (maximum - minimum); return plot.y + (float)(settings.InvertY ? fraction : 1 - fraction) * plot.height; }
-            float X(double v) => plot.x + (float)((v - summary.StartX) / (summary.EndX - summary.StartX)) * plot.width;
+            FPWorkbenchAxisMapping xMap, leftMap = null, rightMap = null;
+            try {
+                if (maximum == minimum) FPWorkbenchAxis.ExpandConstant(minimum, settings.YScale, out minimum, out maximum);
+                xMap = new FPWorkbenchAxisMapping(summary.StartX, summary.EndX, settings.XScale);
+                if (overlay == null || axes == null || leftRange.HasValues) leftMap = new FPWorkbenchAxisMapping(minimum, maximum, settings.YScale);
+                if (dual && rightRange.HasValues) rightMap = new FPWorkbenchAxisMapping(rightRange.Minimum, rightRange.Maximum, axes.RightSettings.YScale);
+            } catch (ArgumentException ex) { GUI.Label(new Rect(rect.x + 5, rect.y + 25, rect.width - 10, 40), ex.Message + " Set positive limits for logarithmic axes."); return; }
+            float Y(double v) { double fraction = leftMap.Fraction(v); return plot.y + (float)(settings.InvertY ? fraction : 1 - fraction) * plot.height; }
+            float X(double v) => plot.x + (float)xMap.Fraction(Math.Max(summary.StartX, Math.Min(summary.EndX, v))) * plot.width;
             try
             {
-                foreach (double tick in overlay != null && axes != null && !leftRange.HasValues ? Array.Empty<double>() : FPWorkbenchPlot.Ticks(minimum, maximum, settings.YTickSpacing))
+                foreach (double tick in overlay != null && axes != null && !leftRange.HasValues ? Array.Empty<double>() : FPWorkbenchAxis.Ticks(minimum, maximum, settings.YScale, settings.YTickSpacing))
                 {
                     float y = Y(tick);
                     if (settings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(1, 1, 1, .12f));
                     GUI.Label(new Rect(plot.x - 73, y - 8, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
                 }
                 if (dual && rightRange.HasValues)
-                    foreach (double tick in FPWorkbenchPlot.Ticks(rightRange.Minimum, rightRange.Maximum, axes.RightSettings.YTickSpacing))
+                    foreach (double tick in FPWorkbenchAxis.Ticks(rightRange.Minimum, rightRange.Maximum, axes.RightSettings.YScale, axes.RightSettings.YTickSpacing))
                     {
-                        double fraction = (tick - rightRange.Minimum) / (rightRange.Maximum - rightRange.Minimum);
+                        double fraction = rightMap.Fraction(tick);
                         float y = plot.y + (float)(axes.RightSettings.InvertY ? fraction : 1 - fraction) * plot.height;
                         if (axes.RightSettings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(1, 1, 1, .07f));
                         GUI.Label(new Rect(plot.xMax + 4, y - 8, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
                     }
-                foreach (double tick in FPWorkbenchPlot.Ticks(summary.StartX, summary.EndX, settings.XTickSpacing))
+                foreach (double tick in FPWorkbenchAxis.Ticks(summary.StartX, summary.EndX, settings.XScale, settings.XTickSpacing))
                 {
                     float x = X(tick);
                     if (settings.Grid) EditorGUI.DrawRect(new Rect(x, plot.y, 1, plot.height), new Color(1, 1, 1, .12f));
@@ -100,7 +110,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
             }
             catch (ArgumentException ex) { GUI.Label(new Rect(plot.x, plot.y, plot.width, 20), ex.Message); }
-            bool aggregated = false;
+            bool aggregated = false; int logOmitted = 0;
             if (Event.current.type == EventType.Repaint)
             {
                 Handles.BeginGUI(); Color old = Handles.color; Handles.color = new Color(0, .7f, 1);
@@ -112,7 +122,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 var range = useRight ? rightRange : leftRange;
                 double seriesMin = overlay != null && axes != null ? range.Minimum : minimum, seriesMax = overlay != null && axes != null ? range.Maximum : maximum;
                 bool invert = useRight ? axes.RightSettings.InvertY : settings.InvertY;
-                float SeriesY(double value) { double fraction = (value - seriesMin) / (seriesMax - seriesMin); return plot.y + (float)(invert ? fraction : 1 - fraction) * plot.height; }
+                var yMap = useRight ? rightMap : leftMap; var yScale = useRight ? axes.RightSettings.YScale : settings.YScale;
+                float SeriesY(double value) { double fraction = yMap.Fraction(Math.Max(seriesMin, Math.Min(seriesMax, value))); return plot.y + (float)(invert ? fraction : 1 - fraction) * plot.height; }
                 Handles.color = colors != null && seriesIndex < colors.Length ? colors[seriesIndex] : new Color(0, .7f, 1);
                 FPWorkbenchSeriesBin previous = default; bool continuous = false;
                 void Line(float ax, float ay, float bx, float by)
@@ -123,7 +134,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 for (int i = 0; i < current.Bins.Length; i++)
                 {
                     var bin = current.Bins[i]; if (bin.Count == 0 || bin.Maximum < seriesMin || bin.Minimum > seriesMax) { continuous = false; continue; }
-                    float x = plot.x + (float)(((bin.FirstX + (bin.LastX - bin.FirstX) * .5) - summary.StartX) / (summary.EndX - summary.StartX)) * plot.width;
+                    if (settings.XScale == FPWorkbenchAxisScale.Log10 && bin.FirstX <= 0 || yScale == FPWorkbenchAxisScale.Log10 && bin.Minimum <= 0) { logOmitted++; continuous = false; continue; }
+                    float x = (X(bin.FirstX) + X(bin.LastX)) * .5f;
                     float low = Mathf.Clamp(SeriesY(bin.Minimum), plot.y, plot.yMax), high = Mathf.Clamp(SeriesY(bin.Maximum), plot.y, plot.yMax);
                     bool exact = bin.Count == 1 && bin.InvalidCount == 0;
                     if (!exact)
@@ -151,6 +163,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 }
                 Handles.color = old; Handles.EndGUI();
+                if (logOmitted > 0) GUI.Label(new Rect(plot.x + 4, plot.y + 20, plot.width - 8, 18), "Log10: " + logOmitted + " nonpositive/mixed envelopes omitted; zoom for individual samples", EditorStyles.miniLabel);
                 if (aggregated) GUI.Label(new Rect(plot.x + 4, plot.y + 2, plot.width - 8, 18), "Extrema envelopes • zoom in for individual samples", EditorStyles.miniLabel);
             }
             GUI.Label(new Rect(plot.x, plot.yMax + (string.IsNullOrEmpty(settings.XLabel) ? 20 : 40), plot.width, 18), (summary.OriginUtcTicks == 0 ? "X: bound numeric/row units" : "Elapsed s from " + new DateTime(summary.OriginUtcTicks, DateTimeKind.Utc).ToString("yyyy-MM-dd HH:mm:ss.ffffff 'UTC'", CultureInfo.InvariantCulture)) + "; cache records read: " + summary.RecordsRead, EditorStyles.miniLabel);

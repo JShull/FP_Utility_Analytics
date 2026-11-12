@@ -53,6 +53,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 int[] Include(int[] columns, int key) { var set = new SortedSet<int>(columns); set.Add(key); var result = new int[set.Count]; set.CopyTo(result); return result; }
                 metadata.LeftSourceColumns = Include(metadata.LeftSourceColumns, metadata.Alignment.Options.LeftKeyColumn);
                 metadata.RightSourceColumns = Include(metadata.RightSourceColumns, metadata.Alignment.Options.RightKeyColumn);
+                if (metadata.Alignment.Options.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime) {
+                    metadata.LeftSourceColumns = Include(metadata.LeftSourceColumns, metadata.Alignment.Options.LeftDateColumn);
+                    metadata.RightSourceColumns = Include(metadata.RightSourceColumns, metadata.Alignment.Options.RightDateColumn);
+                }
             }
             string identity = "FPAlignedValues2\n" + metadata.Alignment.Key + "\n" + metadata.LeftColumnId + "\n" + metadata.RightColumnId + "\n" + metadata.LeftFormulaFingerprint + "\n" + metadata.RightFormulaFingerprint + "\n" + (int)invalidPolicy;
             using (var hash = SHA256.Create()) metadata.Key = Hex(hash.ComputeHash(Encoding.UTF8.GetBytes(identity)));

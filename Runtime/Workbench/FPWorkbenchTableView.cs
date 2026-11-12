@@ -24,6 +24,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string CorrectionFingerprint { get; internal set; }
         public long FirstRow { get; internal set; }
         public int FirstColumn { get; internal set; }
+        /// <summary>Virtual schema ordinals in displayed order. Each entry retains its original source/calculated identity.</summary>
+        public int[] Columns { get; internal set; }
         public FPWorkbenchTableValue[][] Values { get; internal set; }
         public long CharacterCount { get; internal set; }
     }
@@ -56,6 +58,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             if (firstRow < 0 || firstRow > RowCount || rowCount < 0 || rowCount > 256 || firstColumn < 0 || columnCount < 1 || columnCount > 32 || firstColumn > ColumnCount - columnCount)
                 throw new ArgumentOutOfRangeException("Table tile must fit its virtual schema and 256-row/32-column limits.");
+            var columns = new int[columnCount]; for (int c = 0; c < columnCount; c++) columns[c] = firstColumn + c;
+            return ReadProjectedPageAsync(firstRow, rowCount, columns, changes, cancellation);
+        }
+        /// <summary>Reads up to 32 distinct arbitrary virtual columns in one bounded source pass, preserving supplied order.</summary>
+        public Task<FPWorkbenchTablePage> ReadProjectedPageAsync(long firstRow, int rowCount, int[] selectedColumns,
+            FPWorkbenchChangeSnapshot changes = null, CancellationToken cancellation = default)
+        {
+            if (firstRow < 0 || firstRow > RowCount || rowCount < 0 || rowCount > 256 || selectedColumns == null || selectedColumns.Length < 1 || selectedColumns.Length > 32)
+                throw new ArgumentOutOfRangeException("Projected table tile must fit 256-row/32-column bounds.");
+            var columns = (int[])selectedColumns.Clone(); var unique = new System.Collections.Generic.HashSet<int>();
+            foreach (int c in columns) { ValidateColumn(c); if (!unique.Add(c)) throw new ArgumentException("Projected columns must be distinct."); }
+            int columnCount = columns.Length;
             if (changes != null && changes.DatasetId != DatasetId) throw new ArgumentException("Table correction source differs.");
             var evaluator = program?.CreateEvaluator(changes); int rows = (int)Math.Min(rowCount, RowCount - firstRow);
             return Task.Run(() =>
@@ -69,7 +83,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     evaluator?.SetRow(record, firstRow + r); values[r] = new FPWorkbenchTableValue[columnCount];
                     for (int c = 0; c < columnCount; c++)
                     {
-                        int column = firstColumn + c; FPWorkbenchTableValue cell;
+                        int column = columns[c]; FPWorkbenchTableValue cell;
                         if (column >= SourceColumnCount)
                         { var number = evaluator.Derived(column - SourceColumnCount); cell = new FPWorkbenchTableValue(number.ToString(), null, true, false, number.Status); }
                         else
@@ -86,7 +100,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 }
                 cancellation.ThrowIfCancellationRequested(); dataset.ValidateUnchanged();
                 return new FPWorkbenchTablePage { DatasetId = DatasetId, FormulaFingerprint = program?.Fingerprint ?? "none",
-                    CorrectionFingerprint = changes?.Fingerprint ?? "original", FirstRow = firstRow, FirstColumn = firstColumn, Values = values, CharacterCount = characters };
+                    CorrectionFingerprint = changes?.Fingerprint ?? "original", FirstRow = firstRow, FirstColumn = columns[0], Columns = (int[])columns.Clone(), Values = values, CharacterCount = characters };
             }, cancellation);
         }
     }

@@ -44,7 +44,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (column < 0 || column >= sheet.Dataset.ColumnCount) { error = "Linked source column is outside the verified schema."; pendingLinkedDataset = null; pendingLinkedColumns = null; return true; }
             linkedDataset = pendingLinkedDataset; linkedRow = pendingLinkedRow; linkedColumns = pendingLinkedColumns;
             pendingLinkedDataset = null; pendingLinkedColumns = null; active = index;
-            sheet.FirstRow = linkedRow; sheet.FirstColumn = linkedColumns.Length == 0 ? 0 : Math.Min(sheet.Dataset.ColumnCount - 1, Minimum(linkedColumns));
+            EnsureTableSchema(sheet);
+            var projection = JsonUtility.FromJson<FPWorkbenchColumnProjection>(JsonUtility.ToJson(sheet.Columns.Projection));
+            string before = JsonUtility.ToJson(projection);
+            foreach (int column in linkedColumns) projection.SetHidden(sheet.SchemaIds[column], false);
+            if (before != JsonUtility.ToJson(projection)) {
+                sheet.ProjectionUndo ??= new FPWorkbenchColumnProjectionUndo(value => { if (sheets.Contains(sheet)) ApplyColumnProjection(sheet, value); });
+                sheet.ProjectionUndo.Record(before, JsonUtility.ToJson(projection)); ApplyColumnProjection(sheet, projection);
+            }
+            int first = int.MaxValue; foreach (int column in linkedColumns) first = Math.Min(first, Array.IndexOf(sheet.ColumnOrder, column));
+            sheet.FirstRow = linkedRow; sheet.FirstColumn = first == int.MaxValue ? 0 : first;
             selectedDataset = null; page = null; failedPage = null; CancelVirtualPage();
             status = "Figure source row " + (linkedRow + 1) + " highlighted. Table uses its current Original/Effective layer; the figure retains its frozen snapshot.";
             Repaint(); return true;

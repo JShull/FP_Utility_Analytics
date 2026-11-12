@@ -25,15 +25,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             var source = registeredSources?.Find(s => s.DatasetId == sheet.Dataset.DatasetId);
             var definitions = source != null && source.HasCalculations ? source.Calculations : null;
-            if (ReferenceEquals(definitions, sheet.TableDefinitions)) return;
+            if (sheet.ColumnOrder != null && ReferenceEquals(definitions, sheet.TableDefinitions)) return;
             try
             {
                 var program = definitions == null ? null : FPWorkbenchFormulaProgram.Compile(sheet.Dataset, definitions);
                 var next = program == null || program.ColumnCount == 0 ? null : new FPWorkbenchTableView(sheet.Dataset, program);
                 var widths = new Dictionary<string, float>();
-                if (sheet.Table != null)
-                    for (int c = 0; c < Math.Min(sheet.Table.ColumnCount, sheet.Columns.ManualWidths.Length); c++) widths[sheet.Table.ColumnId(c)] = sheet.Columns.ManualWidths[c];
-                sheet.Table = next; sheet.TableProgram = program; sheet.TableDefinitions = definitions;
+                if (sheet.SchemaIds != null)
+                    for (int c = 0; c < Math.Min(sheet.SchemaIds.Length, sheet.Columns.ManualWidths.Length); c++) widths[sheet.SchemaIds[c]] = sheet.Columns.ManualWidths[c];
+                sheet.Table = next; sheet.PageTable = next ?? new FPWorkbenchTableView(sheet.Dataset); sheet.TableProgram = program; sheet.TableDefinitions = definitions;
                 sheet.TableNames = next == null ? null : new string[next.ColumnCount];
                 if (next != null) for (int c = 0; c < next.ColumnCount; c++) sheet.TableNames[c] = (c + 1) + ": " + (next.IsCalculated(c) ? "ƒ " : "") + next.ColumnName(c);
                 if (sheet.Binding.HasDerivedY)
@@ -47,8 +47,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 sheet.Columns.EnsureColumns(DisplayColumnCount(sheet));
                 if (widths.Count > 0)
                     for (int c = 0; c < DisplayColumnCount(sheet); c++)
-                        sheet.Columns.ManualWidths[c] = widths.TryGetValue(next == null ? sheet.Dataset.Cell(0, c).ColumnId : next.ColumnId(c), out float width) ? width : 0;
-                sheet.FirstColumn = Math.Min(sheet.FirstColumn, DisplayColumnCount(sheet) - 1);
+                        sheet.Columns.ManualWidths[c] = widths.TryGetValue(sheet.PageTable.ColumnId(c), out float width) ? width : 0;
+                sheet.SchemaIds = new string[sheet.PageTable.ColumnCount];
+                for (int c = 0; c < sheet.SchemaIds.Length; c++) sheet.SchemaIds[c] = sheet.PageTable.ColumnId(c);
+                sheet.Columns.Projection ??= new FPWorkbenchColumnProjection(); sheet.Columns.Projection.BindSchema(sheet.SchemaIds);
+                sheet.ColumnOrder = sheet.Columns.Projection.Resolve(sheet.SchemaIds);
+                if (sheet.Selection != null) {
+                    try { sheet.Selection.Resolve(sheet.PageTable); }
+                    catch (System.IO.InvalidDataException) { sheet.Selection = null; sheet.RangeAnchorColumn = null; }
+                }
+                sheet.FirstColumn = Math.Min(sheet.FirstColumn, sheet.ColumnOrder.Length - 1);
                 if (sheet == Current) { CancelVirtualPage(); page = null; failedPage = null; }
             }
             catch (Exception ex) { error = "Calculated table schema: " + ex.Message; }
@@ -60,11 +68,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private bool TickVirtualPage(Sheet sheet)
         {
-            if (sheet?.Table == null) { if (virtualPageWork != null || virtualPage != null) CancelVirtualPage(); return false; }
+            if (sheet?.Dataset == null || sheet.Table == null && !UsesProjection(sheet)) { if (virtualPageWork != null || virtualPage != null) CancelVirtualPage(); return false; }
             if (pageWork != null) { pageCancel?.Cancel(); Observe(pageWork); pageWork = null; }
             var snapshot = sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId);
-            int count = Math.Min(visibleColumns, sheet.Table.ColumnCount - sheet.FirstColumn);
-            string key = sheet.Id + ":" + sheet.FirstRow + ":" + sheet.FirstColumn + ":" + count + ":" + sheet.TableProgram.Fingerprint + ":" + (snapshot?.Fingerprint ?? "original");
+            int count = Math.Min(visibleColumns, VisibleColumnCount(sheet) - sheet.FirstColumn);
+            int[] projected = new int[count]; for (int c = 0; c < count; c++) projected[c] = SchemaColumn(sheet, sheet.FirstColumn + c);
+            string key = sheet.Id + ":" + sheet.FirstRow + ":" + string.Join(",", projected) + ":" + count + ":" + (sheet.TableProgram?.Fingerprint ?? "none") + ":" + (snapshot?.Fingerprint ?? "original");
             bool changed = false;
             if (virtualPageWork != null && virtualPageWork.IsCompleted)
             {
@@ -72,13 +81,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 else if (virtualPageWork.IsFaulted) { error = virtualPageWork.Exception.GetBaseException().Message; if (key == requestedVirtualKey) failedVirtualKey = key; }
                 virtualPageWork = null; changed = true;
             }
-            bool missing = virtualPage == null || virtualPage.DatasetId != sheet.Dataset.DatasetId || virtualPage.FormulaFingerprint != sheet.TableProgram.Fingerprint ||
-                virtualPage.CorrectionFingerprint != (snapshot?.Fingerprint ?? "original") || virtualPage.FirstRow != sheet.FirstRow || virtualPage.FirstColumn != sheet.FirstColumn ||
+            bool missing = virtualPage == null || virtualPage.DatasetId != sheet.Dataset.DatasetId || virtualPage.FormulaFingerprint != (sheet.TableProgram?.Fingerprint ?? "none") ||
+                virtualPage.CorrectionFingerprint != (snapshot?.Fingerprint ?? "original") || virtualPage.FirstRow != sheet.FirstRow || !PageColumnsMatch(sheet, virtualPage) ||
                 virtualPage.Values.Length > 0 && virtualPage.Values[0].Length != count;
             if (missing && virtualPageWork == null && key != failedVirtualKey)
             {
                 Cancel(virtualCancellation); virtualCancellation = new CancellationTokenSource(); requestedVirtualKey = key;
-                virtualPageWork = sheet.Table.ReadPageAsync(sheet.FirstRow, RowsPerPage, sheet.FirstColumn, count, snapshot, virtualCancellation.Token);
+                virtualPageWork = sheet.PageTable.ReadProjectedPageAsync(sheet.FirstRow, RowsPerPage, projected, snapshot, virtualCancellation.Token);
             }
             else if (virtualPageWork != null && key != requestedVirtualKey) virtualCancellation.Cancel();
             return changed;
@@ -86,8 +95,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void DrawVirtualRows(Sheet sheet, Rect rect, float indexWidth, int columns)
         {
             string correction = sheet.ShowOriginal ? "original" : SnapshotFor(sheet.Dataset.DatasetId)?.Fingerprint ?? "original";
-            if (virtualPage == null || virtualPage.DatasetId != sheet.Dataset.DatasetId || virtualPage.FirstRow != sheet.FirstRow || virtualPage.FirstColumn != sheet.FirstColumn ||
-                virtualPage.FormulaFingerprint != sheet.TableProgram.Fingerprint || virtualPage.CorrectionFingerprint != correction)
+            if (virtualPage == null || virtualPage.DatasetId != sheet.Dataset.DatasetId || virtualPage.FirstRow != sheet.FirstRow || !PageColumnsMatch(sheet, virtualPage) ||
+                virtualPage.FormulaFingerprint != (sheet.TableProgram?.Fingerprint ?? "none") || virtualPage.CorrectionFingerprint != correction)
             { GUI.Label(new Rect(rect.x + 5, rect.y + 24, rect.width, 20), "Reading calculated table page…"); return; }
             int rows = Math.Min(virtualPage.Values.Length, Math.Max(0, (int)(rect.height / 20) - 1));
             for (int r = 0; r < rows; r++)
@@ -102,12 +111,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     var cell = virtualPage.Values[r][c];
                     if (cell.Calculated) EditorGUI.DrawRect(cellRect, cell.CalculationStatus == FPWorkbenchFormulaStatus.Valid ? new Color(.4f, .3f, .65f, .12f) : new Color(.7f, .25f, .2f, .2f));
                     else if (cell.Masked || cell.Text != cell.Original) EditorGUI.DrawRect(cellRect, new Color(.65f, .4f, .1f, .2f));
-                    DrawLinkedCell(sheet, virtualPage.FirstRow + r, sheet.FirstColumn + c, cellRect);
+                    DrawTableSelection(sheet, virtualPage.FirstRow + r, virtualPage.Columns[c], cellRect);
+                    DrawLinkedCell(sheet, virtualPage.FirstRow + r, virtualPage.Columns[c], cellRect);
                     if (!GUI.Button(cellRect, new GUIContent(cell.Masked ? "[masked]" : cell.Text, cell.Calculated ? "Calculated value; change its definition instead of editing source data." : "Inspect/edit the original source-addressed cell."), EditorStyles.label)) continue;
-                    if (cell.Calculated) { sheet.PlotColumn = sheet.FirstColumn + c; status = "Calculated " + sheet.Table.ColumnName(sheet.FirstColumn + c) + " • row " + (sheet.FirstRow + r + 1) + " • " + cell.Text; }
+                    SelectTableRange(sheet, virtualPage.FirstRow + r, virtualPage.Columns[c], Event.current.shift);
+                    if (cell.Calculated) { sheet.PlotColumn = virtualPage.Columns[c]; status = "Calculated " + sheet.Table.ColumnName(virtualPage.Columns[c]) + " • row " + (sheet.FirstRow + r + 1) + " • " + cell.Text; }
                     else
                     {
-                        int column = sheet.FirstColumn + c; sheet.PlotColumn = column;
+                        int column = virtualPage.Columns[c]; sheet.PlotColumn = column;
                         SelectCell(sheet, sheet.FirstRow + r, column, cell.Original);
                         status = "Row " + (sheet.FirstRow + r + 1) + ", column " + (column + 1) + " • source: " + cell.Original;
                     }

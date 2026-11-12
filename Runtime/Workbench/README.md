@@ -280,7 +280,7 @@ Duplicate policy is Reject or ReportAmbiguous. ReportAmbiguous excludes every ro
 
 The bounded background merge retains one pending key/group counter per source and streams matched long source-row pairs to a revision-qualified cache. Pages contain at most 4,096 pairs. Metadata records policy/domain/units, source identities/paths, coverage counts, correction fingerprints and frozen correction snapshots, plus a pair-payload checksum. Products publish through sibling staging and validate provenance/coverage/checksum on reopening; failures/cancellation clean staging. Corrections that reorder keys reject; new correction revisions get new products. This is mapping data, not a materialized cross-sheet calculation or resampled plot.
 
-The mapping service is exposed in the cross-sheet alignment window described below; cross-sheet value/plot bindings remain open. Independent multi-source overlays, pairing UI/workbook descriptors, composite UTC date/time keys, external sorting indexes, explicit clock transforms, nearest/interpolated policies and aligned figure/export/inspection adapters remain open. A common-domain declaration alone does not establish clock synchronization or scientific equivalence. Existing raw CSV date/time fields may require an explicit combined key before they can satisfy sorted exact alignment.
+The mapping service is exposed in the cross-sheet alignment window described below; cross-sheet value/plot bindings remain open. Independent multi-source overlays, pairing UI/workbook descriptors, composite UTC date/time keys, external sorting indexes, explicit clock transforms, nearest/interpolated policies and aligned figure/export/inspection adapters remain open. A common-domain declaration alone does not establish clock synchronization or scientific equivalence. Split UTC date/time fields can now use composite UTC keys as described below; arbitrary transformed/timezone/clock keys remain explicit future work.
 
 Validation: clean compile and 85/85 Workbench tests passed. Added fixtures cover matched/unmatched/ambiguous conservation, duplicate rejection, exact IDs above 2^53, corrected key revisions, bounded mapping pages/cache reopening, shared-row identity versus unrelated equal-length files, ordinal IDs, unsorted rejection, decimal rounding/underflow/missing-key rejection, incompatible unit declarations, corrupt payload rejection, cleanup and cancellation. No representative large-data throughput or scientific synchronization claim is made.
 
@@ -339,3 +339,115 @@ In Figure settings, use Load/Save presentation preset to share a `.fpplot` JSON 
 The runtime `FPWorkbenchPlotPreset` codec has no UnityEditor dependency. It validates format/version, numeric limits and bounded text before applying anything. Editor file actions accept at most 16 KiB and write through a same-directory temporary file with atomic publication; file reads/writes occur only on explicit button actions. Existing preset paths may be replaced after the native save dialog. Invalid files leave presentation unchanged and report an error. Native file-dialog interaction remains a manual qualification gate.
 
 Validation for presentation presets: clean Unity compile and 90/90 standard Workbench tests passed, including round-trip Unicode labels/style/ticks, preservation of target navigation/locked limits, invalid-application atomicity and unrelated/oversized-file rejection. Native file-dialog interaction has not been automated.
+
+
+## Recover moved sources and missing indexes
+
+Use **Recover moved/missing workbook sources…** below the workbook buttons. This opens a separate recovery window and leaves the active workbook intact. Choose the saved `.fpworkbook`, select an original source, and choose its identical CSV at the new location (or its current location to rebuild a missing index). Hashing, parsing and index construction run in the background and can be cancelled. Repeat for other missing sources, then save a new recovered workbook copy. Open that copy normally to admit all source revisions, formulas, corrections and figure bindings before displaying data.
+
+Recovery reads structurally validated metadata only; that read never authorizes data display. A replacement must retain the saved content/import identity. Changed recordings are rejected rather than inheriting old annotations. A successful operation changes only detached source/sheet paths and cache references, retaining workbook/sheet/figure/cell identities, calculations, corrections and plot settings. It builds a new cache under the normal local Workbench cache parent, leaving old caches and recordings unchanged. Failure/cancellation cleans caches created by the failed operation. Accepted rebuilt caches remain available even before saving the copy; cache quota/abandoned-cache management remains open.
+
+The recovery tool refuses to overwrite its input workbook. Saving the recovered copy does not claim that other unchanged sources have been verified; normal workbook opening remains the full admission boundary. Relinking a changed recording, automatic directory search, portable relative paths and live-session source migration are not implemented. Native chooser gestures remain a manual qualification gate. Runtime `ReadMetadataAsync` is explicitly unverified with respect to sources; `FPWorkbenchSourceRecovery.RelinkAsync` returns a detached snapshot, never mutates its input, and uses no UnityEditor APIs.
+
+Recovery validation: clean Unity compilation and 93/93 standard Workbench tests passed. New fixtures cover moved identical content with changed timestamp/deleted old cache, preserved workbook/source/sheet/figure identities and corrections, changed-content rejection and cancellation cleanup. A native window fixture checks background metadata load, failed-read candidate retention and input-workbook overwrite rejection/copy saving. File chooser gestures and real-user recovery remain separate from these tests.
+
+
+## Column projection foundation
+
+`FPWorkbenchColumnProjection` stores order/visibility by stable schema identity rather than display position. Explicit schema binding preserves surviving identities, removes deleted definitions and appends new columns. Resolve returns the current source/calculated ordinals in displayed order. Hiding the last visible column is rejected. This model does not move source values, formula references or plot bindings.
+
+`FPWorkbenchTableView.ReadProjectedPageAsync` reads up to 256 rows and 32 distinct arbitrary virtual columns in one indexed source pass, retaining requested order, original text, correction state and calculated status. Page `Columns` identifies each displayed value's actual virtual schema ordinal; callers must use that mapping rather than `FirstColumn + displayIndex`. The contiguous ReadPageAsync API now delegates to the same implementation and also supplies Columns. Input selections are copied before scheduling and retained page text remains bounded to 4 MiB.
+
+The Editor integration described below now uses projected paging when columns are hidden or reordered; default identity layouts retain the existing contiguous physical-page path.
+
+Column projection validation: clean Unity compilation and 95/95 standard Workbench tests passed. Fixtures cover stable reorder/hide/schema transitions, invalid/foreign identities, last-visible-column protection, mixed calculated/corrected arbitrary-column pages, input-array mutation isolation, duplicate/out-of-range/page bounds and contiguous compatibility.
+
+
+### Organize visible table columns
+
+Right-click a column header to move it left/right or hide it. The **Visibility…** menu beside column navigation restores individual hidden columns or resets display order. At least one column remains visible. Header dragging still assigns columns to plots; ordering uses explicit menu actions. Widths stay attached to source/calculated identities and paging counts reflect visible columns. Hiding/reordering changes neither source data nor plot/formula bindings.
+
+Display order/visibility persist in each sheet's workbook layout, unsaved window metadata and the existing per-source local column preferences. Runtime workbook admission verifies saved projection identities against the actual physical/calculated schema. When calculation definitions change in the live workbook, surviving column identities retain order/visibility/widths; deleted definitions disappear and new definitions append. Invalid local preference projections reset safely rather than blocking the grid.
+
+Column layout actions have session-local Undo/Redo without restoring row navigation or plot viewport. Linked figure-to-table reveal temporarily restores hidden contributing source columns as an undoable layout change and navigates to their display position. Transient pages carry actual schema ordinals through headers, resizing, source inspection, calculated selection and drag-to-plot payloads, so display positions never retarget edits. The grid suppresses stale pages during layout changes and retains the bounded background tile limits.
+
+Editor projection validation: clean Unity compilation and 96/96 standard Workbench tests passed. The native window fixture verifies projected values, real cell-click source targets, layout Undo/Redo, workbook projection reload and reveal of hidden contributors; runtime tests also verify mapped manual-width fitting. Native context-menu gesture paths and broad large-schema interaction/performance qualification remain separate.
+
+
+## Select and copy table ranges
+
+Click a cell to start a selection, then Shift-click another cell to extend over the intervening visible columns and source rows. Selection highlighting uses stable physical/calculated column IDs. Reordering or hiding columns afterward does not retarget the selected IDs; copying still includes the original selection until it is cleared or replaced. A hidden/removed anchor cannot extend a new range: click a visible cell to restart. Up to 32 columns can be selected; row spans may cross table pages.
+
+Use **Copy TSV** or Ctrl/Cmd+C outside text editing. The Headers toggle includes current column names. Copy uses the current Original/Effective layer and calculated definitions captured at the request. Source strings remain exact; masks appear as `[masked]` and calculation errors retain their explicit status text. Tabs, quotes and multiline text use quoted TSV escaping. This is a textual clipboard product, not a portable correction/provenance document.
+
+Copies are background operations limited to 256 rows, 32 columns and 524,288 UTF-16 characters (1 MiB of character payload, excluding object/OS overhead). Bigger selections require the existing materialized CSV export. Invalid/oversized/cancelled operations never publish partial clipboard text. Closing/replacing the workbook cancels pending copies. Tests restore the user's previous clipboard afterward.
+
+Each sheet persists selected row bounds and stable column IDs in workbook/window metadata; admission verifies source revision, row bounds and actual calculated schema. Reload uses the selection's first row/column as the new Shift anchor. Live removal of a selected calculation clears the invalid selection instead of binding it to a different column. Selection is navigation state rather than an Undo action. Drag selection, multiple disjoint ranges, table-to-figure range highlighting and drag selection remain open; selection-driven file export is described below.
+
+Runtime `FPWorkbenchTableSelection` and `FPWorkbenchTableClipboard` have no Editor/OS clipboard dependency; only the Editor adapter publishes completed text.
+
+Range/clipboard validation: clean Unity compilation and 98/98 standard Workbench tests passed. New tests verify reordered selection copying through the actual Editor clipboard, saved selection IDs, multiline/tab/quote escaping, frozen corrected/calculated values, masks, source preservation, foreign-ID rejection, row/text limits and cancellation. Native Shift-key/Ctrl-C gestures, interoperability with external spreadsheet applications and drag selection remain separate qualification work.
+
+
+### Export the actual table selection
+
+Expand **Materialized CSV export**, enable **Use table selection**, choose the invalid-calculation policy and use **Export table selection…**. The exporter resolves selected stable column IDs against the current verified schema and streams those columns in the selection's captured order across its full source-row span. The current Original/Effective layer and calculated definitions are frozen when export starts. Later selection or display-layout changes do not retarget the requested product.
+
+This uses the existing staged materialized-export engine: a new `.fpexport` folder contains `data.csv` and provenance with source/column identities, row bounds, correction/formula snapshots and a payload checksum. It never overwrites source recordings or existing output products. The clipboard's 256-row/text limit does not apply to streamed CSV output; the table selection still supports at most 32 distinct columns. Manual configured export remains available for 1–256 consecutive schema columns, explicitly independent of visible order.
+
+The native window fixture exports a reordered, nonadjacent selection, changes the selection after scheduling, reimports the generated CSV and verifies both rows, their original requested column order and provenance bounds/IDs. Native output-file chooser gestures remain a separate gate.
+
+Selection-export validation: clean Unity compilation and 98/98 standard Workbench tests passed after integration. This extends the native projection fixture rather than adding a redundant test for the existing streaming writer.
+
+
+## Composite UTC keys for cross-sheet alignment
+
+Choose **UTC Date Time** key comparison in the alignment window, then select a physical date and time column on each source and declare their exact formats and common clock domain. Key comparison uses integer 100 ns Gregorian UTC ticks, never epoch values cast to float/double. Date/time fields are trimmed and joined with one space for parsing. Both streams must already be nondecreasing; duplicate and missing/masked-key policies remain explicit. Frozen corrections apply to both date and time fields.
+
+Supported dates are `dd.MM.yyyy`, `yyyy-MM-dd`, `MM/dd/yyyy`, `dd/MM/yyyy` and `yyyy/MM/dd`. Follow the date with one space and `HH:mm:ss`, optionally a period/comma plus 1–7 required `f` fractional digits. Examples: `dd.MM.yyyy HH:mm:ss.ffffff` and `yyyy-MM-dd HH:mm:ss.fffffff`. Formats must specify a complete four-digit-year date; timezone tokens, optional fractional digits and culture-dependent/current-date defaults are rejected. Invalid dates, excess source precision and decreasing corrected timestamps reject rather than round, reorder or silently exclude values.
+
+The policy and both source-column/format declarations persist in applied window state and workbook aligned-scatter recipes. Date and time columns are both retained among the original-source contributors for linked inspection. Existing ordinal/decimal enum values are unchanged. Expanded policy metadata participates in cache identities, so old derived products may be rebuilt without changing the original recordings.
+
+Scientific contract: these are exact software timestamp comparisons under the user's UTC/common-clock declaration. Zero-tick equality is the acceptance criterion for the hand-enumerated synthetic fixtures; 100 ns representability is not sensor accuracy or clock synchronization. No offset, drift, timezone conversion, leap-second model, uncertainty window, nearest match or resampling is inferred. Independent MATLAB/reference comparison and deployment clock qualification remain required for scientific equivalence claims.
+
+UTC-alignment validation: clean Unity compile and 102/102 standard Workbench tests passed. The native UTC fixture was then strengthened and passed again with swapped right-source date/time column positions. Coverage includes midnight/date-format transitions, adjacent 100 ns instants, exact pair identities, correction revisions, duplicate ambiguity, masked dates, invalid/decreasing/excess-precision rejection, contributor provenance, recipe regeneration and applied-window restoration. No independent sensor-clock or MATLAB equivalence validation is claimed.
+
+
+## Frame a table selection in its scalar plot
+
+After generating the sheet's scalar plot, use **Frame selected table rows** in Plot view. This reads the selected source-row endpoints from the plot's current sorted-X cache in the background, then navigates the shared scalar view to their X extent. Bound columns, data layers, formulas, line/point style and locked Y limits are retained. Pop-out scalar figure views share that viewport. Automatic Y behavior still follows the existing plot settings.
+
+This is X navigation, not sample filtering or a change to the plotted Y column. Equal-X samples outside the selected source rows can remain visible, and single/equal-X extents use the existing Fit padding. The runtime `ReadRowExtentAsync` reads one or two cached point records regardless of selected range length, verifies their source-row identities and endpoint X values, and never reparses CSV or allocates selected-row arrays. Unrepresentable viewport padding rejects without replacing the current range.
+
+Pending requests are discarded if the selection's row bounds, source series/binding or viewport changes before completion. Closing/replacing the workbook cancels pending work. This initial table-to-plot path is for the current sheet's scalar/shared figure session; selection highlighting/filtering in scatter, histograms, overlays and 3D views remains separate work.
+
+Selection-framing validation: clean Unity compilation and 103/103 standard Workbench tests passed. Runtime coverage checks endpoint read counts, duplicate X values, source-row bounds and tampered endpoint identity. The native window fixture checks selected-row framing, retained locked Y limits/inversion/binding and rejection of a result superseded by a later pan.
+
+
+## Histogram settings Undo and last-successful persistence
+
+Histogram row bounds, bin counts, numeric limits, invalid-value policy, density and grid controls now participate in session-local Undo/Redo. Restoring a different query cancels/observes pending work and rebuilds in the background from the window's frozen source/formula/correction snapshot, retaining the previous bars until success. Density/grid-only restoration reuses the current result without querying source data. Fit limits records its completed limit change as an Undo step; rebuilds caused by Undo do not create additional history.
+
+The window separately records its last successfully published histogram query. Saved figure descriptors and reload use those published row/bin/limit/policy values, rather than invalid or unapplied drafts. Current density/grid presentation still persists. A failed zero-bin draft therefore cannot poison the saved figure while valid bars remain displayed. Closing/reloading clears transient Undo history and workers; current valid settings survive through metadata. This does not add source-edit Undo or mutable data to the snapshot viewer.
+
+Histogram Undo validation: clean Unity compile and 103/103 standard Workbench tests passed. The strengthened native histogram fixture verifies bin-count and limit Undo/Redo, fit-limit Undo, no-rebuild density restoration, frozen correction revisions and saving/reloading the last successful query after an invalid draft.
+
+
+### Shared deterministic UTC parsing for plots and alignment
+
+Scalar UTC series and composite alignment now use one runtime complete-date validator/parser. Series binding admission and workbook save validation reject missing-year/current-date formats, unsupported timezone tokens and precision beyond seven required fractional digits. Supported full formats are the same as the composite UTC section above; Editor UTC-format fields include the contract in tooltips. Existing full-date default `dd.MM.yyyy HH:mm:ss.ffffff` remains supported. Previously accepted custom UTC declarations outside this explicit format set must be corrected before a new series/workbook can be admitted; original source fields are never rewritten.
+
+Alignment keys compare integer ticks. Scalar plots retain the integer UTC origin but use double elapsed seconds for X, so plotting coordinates are not a replacement for integer timestamp identity at arbitrary durations. The fixture checks a one-tick offset near the origin without casting full epoch ticks to double. Shared parsing removes culture/current-date inference; it does not establish device-clock agreement or scientific equivalence.
+
+Shared-UTC validation: clean Unity compile and 104/104 standard Workbench tests passed. New coverage checks complete-date admission, one-tick relative-time offsets and rejection before cache/workbook publication. The explicit recovered 487,006-row TDR qualification also passed again through direct asynchronous connected-Editor execution with the shared parser. This verifies software intake/query correctness for that local file, not deployment clock calibration or MATLAB equivalence.
+
+
+## Axis-scale numerical foundation
+
+`FPWorkbenchAxis` provides double linear/Log10 normalization, inverse mapping and bounded ticks in original physical units. Limits must be finite/increasing, log limits positive, and transform inputs inside the declared domain. Callers must explicitly clip/exclude out-of-range/nonpositive data rather than rely on silent clamping. Only inverse roundoff at representable endpoints is clamped to the declared bounds.
+
+Logarithmic tick spacing is in decades; auto spacing bounds the returned tick count. Tick values remain positive and strictly increasing after representability filtering. Narrow intervals may have few/no ticks for an explicit spacing. The transform uses relative-log and small-delta expansions to preserve narrow ranges at large offsets, and avoids overflow for broad positive ratios. Exact endpoints are retained; interior coordinates remain subject to double quantization. These are presentation transforms and do not rewrite measurements or timestamp identities.
+
+The existing Editor plot settings/renderers still use linear axes. Wiring scale settings into scalar/dual-axis/scatter drawing, navigation, presets/Undo and saved metadata, with explicit nonpositive-sample/envelope handling, is the next integration step. This runtime helper alone does not complete logarithmic plot support.
+
+Axis foundation validation: clean Unity compile and 106/106 standard Workbench tests passed after reopening the authorized matching Editor. New fixtures cover exact endpoints, representative inverse round trips across the positive double domain, four-ULP ranges near 1e300, overflow-safe linear normalization, major/explicit/bounded log ticks and invalid-domain/spacing rejection. The representative round-trip checks use a 1e-12 normalized tolerance and narrow-range fraction checks 1e-14; they do not establish universal error bounds for quantized interior coordinates or any rendered log-view behavior.

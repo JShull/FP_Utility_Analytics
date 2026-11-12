@@ -150,6 +150,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     }
                     leftValueNames = ValueNames(leftNames, leftProgram); rightValueNames = ValueNames(rightNames, rightProgram);
                     if (restoreAfterAdmission && options.Mode == FPWorkbenchAlignmentMode.ExactKey && (options.LeftKeyColumn < 0 || options.LeftKeyColumn >= left.ColumnCount || options.RightKeyColumn < 0 || options.RightKeyColumn >= right.ColumnCount)) throw new InvalidDataException("Saved alignment keys are outside the verified source schema.");
+                    if (restoreAfterAdmission && options.Mode == FPWorkbenchAlignmentMode.ExactKey && options.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime &&
+                        (options.LeftDateColumn < 0 || options.LeftDateColumn >= left.ColumnCount || options.RightDateColumn < 0 || options.RightDateColumn >= right.ColumnCount)) throw new InvalidDataException("Saved UTC dates are outside the verified schema.");
+                    options.LeftDateColumn = Mathf.Clamp(options.LeftDateColumn, 0, left.ColumnCount - 1); options.RightDateColumn = Mathf.Clamp(options.RightDateColumn, 0, right.ColumnCount - 1);
                     options.LeftKeyColumn = Mathf.Clamp(options.LeftKeyColumn, 0, left.ColumnCount - 1); options.RightKeyColumn = Mathf.Clamp(options.RightKeyColumn, 0, right.ColumnCount - 1);
                     if (restoreAfterAdmission) BeginBuild();
                 }
@@ -196,11 +199,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     options.Mode = (FPWorkbenchAlignmentMode)EditorGUILayout.EnumPopup("Pairing", options.Mode);
                     if (options.Mode == FPWorkbenchAlignmentMode.ExactKey)
                     {
-                        options.LeftKeyColumn = EditorGUILayout.Popup("Left key", options.LeftKeyColumn, leftNames);
-                        options.RightKeyColumn = EditorGUILayout.Popup("Right key", options.RightKeyColumn, rightNames);
+                        options.LeftKeyColumn = EditorGUILayout.Popup(options.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime ? "Left UTC time" : "Left key", options.LeftKeyColumn, leftNames);
+                        options.RightKeyColumn = EditorGUILayout.Popup(options.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime ? "Right UTC time" : "Right key", options.RightKeyColumn, rightNames);
                         options.KeyKind = (FPWorkbenchAlignmentKeyKind)EditorGUILayout.EnumPopup("Key comparison", options.KeyKind);
                         options.KeyDomain = EditorGUILayout.TextField(new GUIContent("Common key domain", "Explicit common identity/clock domain. No timezone, clock or unit mapping is inferred."), options.KeyDomain);
                         options.Duplicates = (FPWorkbenchDuplicateKeyPolicy)EditorGUILayout.EnumPopup("Duplicate keys", options.Duplicates);
+                        if (options.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime) {
+                            options.LeftDateColumn = EditorGUILayout.Popup("Left UTC date", options.LeftDateColumn, leftNames);
+                            options.RightDateColumn = EditorGUILayout.Popup("Right UTC date", options.RightDateColumn, rightNames);
+                            const string formats = "Date: dd.MM.yyyy, yyyy-MM-dd, MM/dd/yyyy, dd/MM/yyyy or yyyy/MM/dd. Time: HH:mm:ss, optionally decimal separator plus 1–7 required f digits. Values must be declared UTC; no timezone conversion is inferred.";
+                            options.LeftUtcFormat = EditorGUILayout.TextField(new GUIContent("Left UTC format", formats), options.LeftUtcFormat);
+                            options.RightUtcFormat = EditorGUILayout.TextField(new GUIContent("Right UTC format", formats), options.RightUtcFormat);
+                            EditorGUILayout.HelpBox("Exact UTC timestamp pairing uses 100 ns ticks. This does not estimate clock offset, drift or time uncertainty.", MessageType.Info);
+                        }
                         if (options.KeyKind == FPWorkbenchAlignmentKeyKind.Decimal)
                         { options.LeftUnits = EditorGUILayout.TextField("Left key units", options.LeftUnits); options.RightUnits = EditorGUILayout.TextField("Right key units", options.RightUnits); }
                     }
@@ -242,8 +253,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     using (new EditorGUILayout.HorizontalScope())
                     {
                         GUILayout.Label((firstPair + i + 1).ToString(), GUILayout.Width(65)); var pair = pairs[i];
-                        if (GUILayout.Button("Reveal left row " + (pair.LeftRow + 1))) Reveal(metadata.LeftDatasetId, pair.LeftRow, metadata.Options.LeftKeyColumn);
-                        if (GUILayout.Button("Reveal right row " + (pair.RightRow + 1))) Reveal(metadata.RightDatasetId, pair.RightRow, metadata.Options.RightKeyColumn);
+                        if (GUILayout.Button("Reveal left row " + (pair.LeftRow + 1))) Reveal(metadata.LeftDatasetId, pair.LeftRow, metadata.Options.LeftKeyColumn, metadata.Options.LeftDateColumn);
+                        if (GUILayout.Button("Reveal right row " + (pair.RightRow + 1))) Reveal(metadata.RightDatasetId, pair.RightRow, metadata.Options.RightKeyColumn, metadata.Options.RightDateColumn);
                     }
             else GUILayout.Label(paging != null ? "Reading matched pair page…" : "No matched pairs.");
             EditorGUILayout.EndScrollView();
@@ -255,9 +266,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             catch (Exception ex) { error = ex.Message; }
         }
         private string Name(string id) => Array.Find(sources, source => source.DatasetId == id)?.Name ?? id;
-        private void Reveal(string id, long row, int keyColumn)
+        private void Reveal(string id, long row, int keyColumn, int dateColumn)
         {
-            int[] columns = metadata.Options.Mode == FPWorkbenchAlignmentMode.SharedSourceRows ? Array.Empty<int>() : new[] { keyColumn };
+            int[] columns = metadata.Options.Mode == FPWorkbenchAlignmentMode.SharedSourceRows ? Array.Empty<int>() : metadata.Options.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime ? new[] { dateColumn, keyColumn } : new[] { keyColumn };
             if (!FPDataWorkbenchWindow.RevealFigureRow(workbook, id, row, columns)) error = "Open the owning workbook and free a sheet tab to reveal this row.";
         }
     }

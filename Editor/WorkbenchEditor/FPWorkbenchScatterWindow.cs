@@ -307,6 +307,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 FPWorkbenchPlotView.LabelControls(settings); settings.MarkerSize = EditorGUILayout.Slider("Point size", settings.MarkerSize, 1, 16);
                 settings.XTickSpacing = EditorGUILayout.DoubleField("X grid spacing", settings.XTickSpacing);
                 settings.YTickSpacing = EditorGUILayout.DoubleField("Y grid spacing", settings.YTickSpacing);
+                settings.StartX = EditorGUILayout.DoubleField("X minimum", settings.StartX); settings.EndX = EditorGUILayout.DoubleField("X maximum", settings.EndX);
+                settings.MinimumY = EditorGUILayout.DoubleField("Y minimum", settings.MinimumY); settings.MaximumY = EditorGUILayout.DoubleField("Y maximum", settings.MaximumY);
                 pointColor = EditorGUILayout.ColorField("Point color", pointColor);
             }
             presentationUndo.End();
@@ -334,14 +336,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             EditorGUI.DrawRect(rect, new Color(.1f, .1f, .1f));
             if (view == null) { GUI.Label(rect, "Choose numeric X/Y columns and Apply / fit."); return; }
             Rect plot = new Rect(rect.x + 80, rect.y + 25, Math.Max(1, rect.width - 95), Math.Max(1, rect.height - 85)); var b = view.Bounds;
-            float X(double x) => plot.x + (float)((x - b.MinimumX) / (b.MaximumX - b.MinimumX)) * plot.width;
-            float Y(double y) { double t = (y - b.MinimumY) / (b.MaximumY - b.MinimumY); return plot.y + (float)(settings.InvertY ? t : 1 - t) * plot.height; }
+            FPWorkbenchAxisMapping xMap, yMap;
+            try { xMap = new FPWorkbenchAxisMapping(b.MinimumX, b.MaximumX, settings.XScale); yMap = new FPWorkbenchAxisMapping(b.MinimumY, b.MaximumY, settings.YScale); }
+            catch (ArgumentException ex) { GUI.Label(plot, ex.Message + " Set positive limits in Figure settings."); return; }
+            float X(double x) => plot.x + (float)xMap.Fraction(x) * plot.width;
+            float Y(double y) { double t = yMap.Fraction(y); return plot.y + (float)(settings.InvertY ? t : 1 - t) * plot.height; }
             GUI.Label(new Rect(rect.x + 5, rect.y, rect.width - 10, 20), string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + names[appliedX] : settings.Title, EditorStyles.boldLabel);
             try
             {
-                foreach (double tick in FPWorkbenchPlot.Ticks(b.MinimumX, b.MaximumX, settings.XTickSpacing))
+                foreach (double tick in FPWorkbenchAxis.Ticks(b.MinimumX, b.MaximumX, settings.XScale, settings.XTickSpacing))
                 { float x = X(tick); if (settings.Grid) EditorGUI.DrawRect(new Rect(x, plot.y, 1, plot.height), new Color(1, 1, 1, .1f)); GUI.Label(new Rect(x - 20, plot.yMax + 2, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel); }
-                foreach (double tick in FPWorkbenchPlot.Ticks(b.MinimumY, b.MaximumY, settings.YTickSpacing))
+                foreach (double tick in FPWorkbenchAxis.Ticks(b.MinimumY, b.MaximumY, settings.YScale, settings.YTickSpacing))
                 { float y = Y(tick); if (settings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(1, 1, 1, .1f)); GUI.Label(new Rect(rect.x + 3, y - 8, 72, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel); }
             }
             catch (ArgumentException ex) { GUI.Label(plot, ex.Message); }
@@ -391,9 +396,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void Navigate(double scale, double ax, double ay, double px, double py)
         {
-            double width = settings.EndX - settings.StartX, height = settings.MaximumY - settings.MinimumY;
-            double left = settings.StartX + width * ax - width * scale * ax + width * px, bottom = settings.MinimumY + height * ay - height * scale * ay + height * py;
-            try { ValidateViewport(left, left + width * scale, bottom, bottom + height * scale); settings.StartX = left; settings.EndX = left + width * scale; settings.MinimumY = bottom; settings.MaximumY = bottom + height * scale; } catch (ArgumentException) { }
+            if (!FPWorkbenchAxis.TryNavigate(settings.StartX, settings.EndX, settings.XScale, scale, ax, px, out double left, out double right) ||
+                !FPWorkbenchAxis.TryNavigate(settings.MinimumY, settings.MaximumY, settings.YScale, scale, ay, py, out double bottom, out double top)) return;
+            try { ValidateViewport(left, right, bottom, top); settings.StartX = left; settings.EndX = right; settings.MinimumY = bottom; settings.MaximumY = top; } catch (ArgumentException) { }
         }
         private bool StageColumn(FPWorkbenchColumnDragPayload payload, bool x)
         {

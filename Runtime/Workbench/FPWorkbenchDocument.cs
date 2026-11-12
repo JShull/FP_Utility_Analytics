@@ -20,6 +20,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public FPWorkbenchCsvProfile Import = new FPWorkbenchCsvProfile();
         public FPWorkbenchSeriesBinding Binding = new FPWorkbenchSeriesBinding();
         public FPWorkbenchPlotSettings Plot = new FPWorkbenchPlotSettings();
+        public FPWorkbenchTableSelection Selection;
         public FPWorkbenchColumnLayout Columns = new FPWorkbenchColumnLayout();
     }
 
@@ -43,6 +44,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 if (sheet == null || string.IsNullOrEmpty(sheet.Id) || sheet.Id.Length > 128 || !ids.Add(sheet.Id) || string.IsNullOrEmpty(sheet.Name) || sheet.Name.Length > 512 || string.IsNullOrEmpty(sheet.DatasetId) || sheet.DatasetId.Length > 256 || string.IsNullOrEmpty(sheet.SourcePath) || string.IsNullOrEmpty(sheet.CacheDirectory) || sheet.SourcePath.Length > 8192 || sheet.CacheDirectory.Length > 8192 || sheet.FirstRow < 0 || sheet.FirstColumn < 0 || sheet.PlotColumn < 0 || sheet.Import == null || sheet.Binding == null || sheet.Plot == null || sheet.Columns == null)
                     throw new InvalidDataException("Invalid sheet identity, source, layout or binding.");
                 sheet.Import.Copy();
+                try { sheet.Binding.Copy(sheet.Import.MaximumColumns); }
+                catch (ArgumentException ex) { throw new InvalidDataException("Invalid sheet plot binding.", ex); }
+                sheet.Columns.Projection ??= new FPWorkbenchColumnProjection(); sheet.Columns.Projection.Validate();
+                if (sheet.Selection != null && string.IsNullOrEmpty(sheet.Selection.DatasetId)) sheet.Selection = null;
+                if (sheet.Selection != null) { sheet.Selection.Validate(); if (sheet.Selection.DatasetId != sheet.DatasetId) throw new InvalidDataException("Sheet selection belongs to another source."); }
                 ValidatePlot(sheet.Plot);
                 if ((sheet.Columns.Version != 1 && sheet.Columns.Version != 2) || sheet.Columns.ManualWidths == null || sheet.Columns.ManualWidths.Length > FPWorkbenchColumnLayout.MaximumColumns) throw new InvalidDataException("Invalid column layout.");
                 if (sheet.Columns.Version == 2 && (float.IsNaN(sheet.Columns.RowHeaderWidth) || float.IsInfinity(sheet.Columns.RowHeaderWidth) || sheet.Columns.RowHeaderWidth < 40 || sheet.Columns.RowHeaderWidth > 320)) throw new InvalidDataException("Invalid row-header width.");
@@ -77,9 +83,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         }
         internal static void ValidatePlot(FPWorkbenchPlotSettings p)
         {
-            if (p == null || !Enum.IsDefined(typeof(FPWorkbenchPlotStyle), p.Style) || !Finite(p.LineWidth) || p.LineWidth < 1 || p.LineWidth > 8 || !Finite(p.MarkerSize) || p.MarkerSize < 1 || p.MarkerSize > 16 || !Finite(p.StartX) || !Finite(p.EndX) || p.EndX <= p.StartX || !Finite(p.MinimumY) || !Finite(p.MaximumY) || p.MaximumY < p.MinimumY ||
+            if (p == null || !Enum.IsDefined(typeof(FPWorkbenchAxisScale), p.XScale) || !Enum.IsDefined(typeof(FPWorkbenchAxisScale), p.YScale) || !Enum.IsDefined(typeof(FPWorkbenchPlotStyle), p.Style) || !Finite(p.LineWidth) || p.LineWidth < 1 || p.LineWidth > 8 || !Finite(p.MarkerSize) || p.MarkerSize < 1 || p.MarkerSize > 16 || !Finite(p.StartX) || !Finite(p.EndX) || p.EndX <= p.StartX || !Finite(p.MinimumY) || !Finite(p.MaximumY) || p.MaximumY < p.MinimumY ||
                 !Finite(p.XTickSpacing) || !Finite(p.YTickSpacing) || p.XTickSpacing < 0 || p.YTickSpacing < 0 || p.Title == null || p.Title.Length > 4096 ||
                 p.XLabel == null || p.XLabel.Length > 4096 || p.YLabel == null || p.YLabel.Length > 4096) throw new InvalidDataException("Invalid plot range, grid spacing or labels.");
+            if (p.XScale == FPWorkbenchAxisScale.Log10 && p.HasRange && p.StartX <= 0 || p.YScale == FPWorkbenchAxisScale.Log10 && p.LockY && p.MinimumY <= 0)
+                throw new InvalidDataException("Logarithmic plot limits must be positive.");
         }
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
@@ -192,6 +200,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     var actualImport = dataset.ImportProfile;
                     if (sheet.Import.Delimiter != actualImport.Delimiter || sheet.Import.EncodingCodePage != actualImport.EncodingCodePage) throw new InvalidDataException("Saved import interpretation differs from the indexed source: " + sheet.Name);
                     if (sheet.Columns.ManualWidths.Length != 0 && sheet.Columns.ManualWidths.Length != dataset.ColumnCount && sheet.Columns.ManualWidths.Length != tableColumns) throw new InvalidDataException("Column layout differs from source schema: " + sheet.Name);
+                    if (sheet.Columns.Projection.Order.Length > 0) {
+                        var program = sourceMetadata.HasCalculations ? FPWorkbenchFormulaProgram.Compile(dataset, sourceMetadata.Calculations) : null;
+                        var table = new FPWorkbenchTableView(dataset, program); var identities = new string[table.ColumnCount];
+                        for (int c = 0; c < identities.Length; c++) identities[c] = table.ColumnId(c);
+                        var visible = sheet.Columns.Projection.Resolve(identities);
+                        if (sheet.FirstColumn >= visible.Length) throw new InvalidDataException("Saved table column position exceeds its visible projection.");
+                    }
+                    if (sheet.Selection != null) {
+                        var program = sourceMetadata.HasCalculations ? FPWorkbenchFormulaProgram.Compile(dataset, sourceMetadata.Calculations) : null;
+                        sheet.Selection.Resolve(new FPWorkbenchTableView(dataset, program));
+                    }
                     sheet.Binding.Copy(dataset.ColumnCount); sheet.Columns.EnsureColumns(tableColumns);
                     if (sheet.Binding.HasDerivedY || sheet.Binding.HasDerivedX)
                     {

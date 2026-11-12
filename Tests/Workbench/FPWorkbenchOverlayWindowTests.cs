@@ -48,6 +48,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
  axes.RightSettings.YLabel = "Right channel"; axes.RightSettings.InvertY = true;
                 Assert.That(axes.Resolve(View(window), settings, false).Minimum, Is.EqualTo(100));
                 Assert.That(axes.Resolve(View(window), settings, true).Maximum, Is.EqualTo(-100));
+                settings.XScale = FPWorkbenchAxisScale.Log10; settings.YScale = FPWorkbenchAxisScale.Log10;
                 settings.Title = "Dive comparison"; settings.XLabel = "Elapsed time (s)"; settings.YLabel = "Depth (m)";
                 type.GetField("showFigureSettings", flags).SetValue(window, true);
                 foreach (FPWorkbenchPlotStyle style in Enum.GetValues(typeof(FPWorkbenchPlotStyle)))
@@ -64,6 +65,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 var restoredAxes = (FPWorkbenchOverlayAxes)type.GetField("axes", flags).GetValue(restored);
                 Assert.That(restoredAxes.Right, Is.EqualTo(new[] { false, true }));
                 Assert.That(restoredAxes.RightSettings.YLabel, Is.EqualTo("Right channel")); Assert.That(restoredAxes.RightSettings.InvertY, Is.True);
+                Assert.That(restoredSettings.XScale, Is.EqualTo(FPWorkbenchAxisScale.Log10)); Assert.That(restoredSettings.YScale, Is.EqualTo(FPWorkbenchAxisScale.Log10));
+                Assert.That(restoredAxes.RightSettings.YScale, Is.EqualTo(FPWorkbenchAxisScale.Linear));
+                restoredAxes.RightSettings.YScale = FPWorkbenchAxisScale.Log10; restored.Repaint(); yield return null; yield return null;
+                Assert.That(View(restored).Series[1].Minimum, Is.LessThan(0), "Invalid log presentation must not rewrite negative measurements.");
+                restoredAxes.RightSettings.YScale = FPWorkbenchAxisScale.Linear;
                 Assert.That(restoredSettings.Title, Is.EqualTo("Dive comparison"));
                 Assert.That(restoredSettings.XLabel, Is.EqualTo("Elapsed time (s)"));
                 Assert.That(restoredSettings.YLabel, Is.EqualTo("Depth (m)"));

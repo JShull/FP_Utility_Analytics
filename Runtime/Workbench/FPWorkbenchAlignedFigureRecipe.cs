@@ -73,6 +73,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 if (left.DatasetId != right.DatasetId || left.RowCount != right.RowCount || left.ColumnCount != right.ColumnCount || JsonUtility.ToJson(left.ImportProfile) != JsonUtility.ToJson(right.ImportProfile)) throw new InvalidDataException("Shared rows require identical source revisions and interpretations.");
             }
             else if (Alignment.LeftKeyColumn < 0 || Alignment.LeftKeyColumn >= left.ColumnCount || Alignment.RightKeyColumn < 0 || Alignment.RightKeyColumn >= right.ColumnCount) throw new InvalidDataException("Aligned key exceeds the actual source schema.");
+            if (Alignment.Mode == FPWorkbenchAlignmentMode.ExactKey && Alignment.KeyKind == FPWorkbenchAlignmentKeyKind.UtcDateTime &&
+                (Alignment.LeftDateColumn < 0 || Alignment.LeftDateColumn >= left.ColumnCount || Alignment.RightDateColumn < 0 || Alignment.RightDateColumn >= right.ColumnCount))
+                throw new InvalidDataException("Aligned UTC date column exceeds the actual source schema.");
             try
             {
                 Resolve(LeftDatasetId, left.ColumnCount, LeftValueColumnId, HasLeftCalculations ? FPWorkbenchFormulaProgram.Compile(left, LeftCalculations) : null);

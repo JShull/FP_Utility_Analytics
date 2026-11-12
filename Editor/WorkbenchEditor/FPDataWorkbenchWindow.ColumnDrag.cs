@@ -45,14 +45,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var e = Event.current;
             if (e.type != EventType.MouseDown || e.button != 0 || !rect.Contains(e.mousePosition) || GUIUtility.hotControl != 0) return;
             dragColumnSheet = sheet; dragColumn = column; dragColumnStart = e.mousePosition;
-            dragStableColumn = column >= sheet.Dataset.ColumnCount ? sheet.Table.ColumnId(column) : sheet.Dataset.Cell(0, column).ColumnId;
+            dragStableColumn = column >= sheet.Dataset.ColumnCount ? sheet.Table.ColumnId(column) : new FPWorkbenchCell(sheet.Dataset.DatasetId, 0, column).ColumnId;
             dragDerivedId = column >= sheet.Dataset.ColumnCount ? sheet.TableProgram.ColumnId(column - sheet.Dataset.ColumnCount) : "";
             GUIUtility.hotControl = dragColumnControl; e.Use();
         }
         private bool StageColumnDrop(Sheet sheet, string workbook, string dataset, string columnId, int column, bool x)
         {
             if (sheet?.Dataset == null || workbook != workbookId || dataset != sheet.Dataset.DatasetId || column < 0 ||
-                column >= sheet.Dataset.ColumnCount || columnId != sheet.Dataset.Cell(0, column).ColumnId) return false;
+                column >= sheet.Dataset.ColumnCount || columnId != new FPWorkbenchCell(sheet.Dataset.DatasetId, 0, column).ColumnId) return false;
             sheet.Binding ??= new FPWorkbenchSeriesBinding();
             EnsurePlotUndo(sheet);
             if (x) { sheet.Binding.XMode = FPWorkbenchXMode.Numeric; sheet.Binding.XColumn = column; sheet.Binding.XDerivedId = ""; }

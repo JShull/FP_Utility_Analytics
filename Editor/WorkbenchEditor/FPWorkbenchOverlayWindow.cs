@@ -209,7 +209,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     if (GUILayout.Button("Apply X")) BeginBuild();
                 }
                 if (binding.XMode == FPWorkbenchXMode.UtcDateTime)
-                { binding.DateColumn = EditorGUILayout.Popup("UTC date", binding.DateColumn, names); binding.UtcFormat = EditorGUILayout.TextField("UTC format", binding.UtcFormat); }
+                { binding.DateColumn = EditorGUILayout.Popup("UTC date", binding.DateColumn, names); binding.UtcFormat = EditorGUILayout.TextField(new GUIContent("UTC format", FPWorkbenchPlotView.UtcFormatTooltip), binding.UtcFormat); }
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     selectedColumn = EditorGUILayout.Popup("Add Y", selectedColumn, yNames);
@@ -243,9 +243,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 bool wasLocked = settings.LockY;
                 settings.LockY = GUILayout.Toggle(settings.LockY, "Lock Y", EditorStyles.toolbarButton);
                 if (!wasLocked && settings.LockY && view != null && !double.IsNaN(view.Minimum))
-                { var range = axes.Resolve(view, settings, false, false); if (range.HasValues) { settings.MinimumY = range.Minimum; settings.MaximumY = range.Maximum; } }
+                { try { var range = axes.Resolve(view, settings, false, false); if (range.HasValues) { settings.MinimumY = range.Minimum; settings.MaximumY = range.Maximum; } } catch (ArgumentException ex) { error = ex.Message; } }
                 if (GUILayout.Button("Fit Y", EditorStyles.toolbarButton) && view != null && !double.IsNaN(view.Minimum))
-                { var range = axes.Resolve(view, settings, false, false); if (range.HasValues) { settings.MinimumY = range.Minimum; settings.MaximumY = range.Maximum; } }
+                { try { var range = axes.Resolve(view, settings, false, false); if (range.HasValues) { settings.MinimumY = range.Minimum; settings.MaximumY = range.Maximum; } } catch (ArgumentException ex) { error = ex.Message; } }
             }
             showFigureSettings = EditorGUILayout.Foldout(showFigureSettings, "Figure settings", true);
             if (showFigureSettings)
@@ -267,8 +267,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     GUILayout.Label("Right Y", GUILayout.Width(55)); bool locked = right.LockY;
                     right.LockY = GUILayout.Toggle(right.LockY, "Lock limits"); right.InvertY = GUILayout.Toggle(right.InvertY, "Invert"); right.Grid = GUILayout.Toggle(right.Grid, "Grid");
                     bool fit = GUILayout.Button("Fit right Y");
-                    if (view != null && (fit || !locked && right.LockY)) { var range = axes.Resolve(view, settings, true, false); if (range.HasValues) { right.MinimumY = range.Minimum; right.MaximumY = range.Maximum; } }
+                    if (view != null && (fit || !locked && right.LockY)) { try { var range = axes.Resolve(view, settings, true, false); if (range.HasValues) { right.MinimumY = range.Minimum; right.MaximumY = range.Maximum; } } catch (ArgumentException ex) { error = ex.Message; } }
                 }
+                right.YScale = (FPWorkbenchAxisScale)EditorGUILayout.EnumPopup("Right Y scale", right.YScale);
                 right.YLabel = EditorGUILayout.TextField("Right Y label", right.YLabel);
                 right.YTickSpacing = EditorGUILayout.DoubleField("Right grid spacing", right.YTickSpacing);
                 if (right.LockY) { right.MinimumY = EditorGUILayout.DoubleField("Right minimum", right.MinimumY); right.MaximumY = EditorGUILayout.DoubleField("Right maximum", right.MaximumY); }

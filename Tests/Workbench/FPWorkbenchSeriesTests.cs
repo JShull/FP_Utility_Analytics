@@ -51,6 +51,23 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             Assert.That(duplicates.Bins.Length, Is.EqualTo(2));
             Assert.That(duplicates.Bins.Select(b => b.MinimumRow), Is.EqualTo(new long[] { 1, 2 }));
         }
+        [Test] public async Task UtcBindingsRequireCompleteDatesAndRetainHundredNanosecondOffsets()
+        {
+            var data = await Import("date,time,y\n2026-01-17,00:00:00.0000000,1\n2026-01-17,00:00:00.0000001,2\n");
+            var binding = new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.UtcDateTime, DateColumn = 0, XColumn = 1, YColumn = 2, UtcFormat = "yyyy-MM-dd HH:mm:ss.fffffff" };
+            var series = await FPWorkbenchSeriesCache.BuildAsync(data, binding);
+            Assert.That(series.OriginUtcTicks, Is.EqualTo(new DateTime(2026, 1, 17, 0, 0, 0, DateTimeKind.Utc).Ticks));
+            var view = await series.QueryAsync(0, .000001); Assert.That(view.Bins.Length, Is.EqualTo(2));
+            Assert.That(view.Bins[1].FirstX, Is.EqualTo(.0000001).Within(1e-20));
+            int cacheCount = Directory.GetDirectories(data.CacheDirectory).Length;
+            foreach (string format in new[] { "dd.MM HH:mm:ss.fffffff", "HH:mm:ss.fffffff", "yyyy-MM-dd HH:mm:ssK", "yyyy-MM-dd HH:mm:ss.ffffffff" }) {
+                binding.UtcFormat = format; Assert.Throws<ArgumentException>(() => FPWorkbenchSeriesCache.BuildAsync(data, binding));
+            }
+            Assert.That(Directory.GetDirectories(data.CacheDirectory).Length, Is.EqualTo(cacheCount));
+            var document = new FPWorkbenchDocument(); document.Sheets.Add(new FPWorkbenchSheetDocument { DatasetId = data.DatasetId,
+                SourcePath = data.SourcePath, CacheDirectory = data.CacheDirectory, Import = data.ImportProfile, Binding = binding });
+            Assert.Throws<InvalidDataException>(() => document.Validate(), "Unsafe/incomplete UTC declarations cannot be saved as valid workbook metadata.");
+        }
         [TestCase("x,y\n1,2\n0,3\n")]
         [TestCase("x,y\n1,2\n---,3\n")]
         public async Task InvalidOrDecreasingXDoesNotPublishSeries(string text)
@@ -70,6 +87,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             Assert.That(view.Bins.Sum(b => b.Count), Is.EqualTo(9897));
             Assert.That(view.Bins[0].FirstIndex, Is.EqualTo(102));
             Assert.That(view.Bins.Last().EndIndex, Is.EqualTo(9999));
+        }
+        [Test] public async Task SourceRowExtentReadsOnlyEndpointsAndRetainsDuplicateXIdentity()
+        {
+            var data = await Import("x,y\n10,1\n20,2\n20,3\n30,4\n");
+            var series = await FPWorkbenchSeriesCache.BuildAsync(data, new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, YColumn = 1 });
+            var extent = await series.ReadRowExtentAsync(1, 3);
+            Assert.That(extent.DatasetId, Is.EqualTo(data.DatasetId)); Assert.That(extent.FirstRow, Is.EqualTo(1)); Assert.That(extent.EndRow, Is.EqualTo(3));
+            Assert.That(extent.FirstX, Is.EqualTo(20)); Assert.That(extent.LastX, Is.EqualTo(20)); Assert.That(extent.RecordsRead, Is.EqualTo(2));
+            Assert.That((await series.ReadRowExtentAsync(2, 3)).RecordsRead, Is.EqualTo(1));
+            Assert.Throws<ArgumentOutOfRangeException>(() => series.ReadRowExtentAsync(3, 3));
+            Assert.Throws<ArgumentOutOfRangeException>(() => series.ReadRowExtentAsync(0, 5));
+            using (var writer = new BinaryWriter(File.OpenWrite(Path.Combine(series.DirectoryPath, "points.bin")))) { writer.BaseStream.Position = 32 + 16; writer.Write(999L); }
+            try { await series.ReadRowExtentAsync(1, 3); Assert.Fail("Endpoint source-row tampering must reject."); } catch (InvalidDataException) { }
         }
         [Test] public async Task DamagedSeriesCacheIsRejectedOnReopen()
         {
