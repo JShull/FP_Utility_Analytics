@@ -11,6 +11,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
     {
         private const long MiB = 1024 * 1024;
         private sealed class Item { public string Id, Directory; }
+        private static async Task ExpectFailure<T>(Func<Task> action) where T : Exception
+        {
+            try { await action(); }
+            catch (T) { return; }
+            Assert.Fail("Expected " + typeof(T).Name);
+        }
         private static async Task<Item> Add(FPWorkbenchDiskCacheStore store, int bytes)
         {
             using var writer = await store.ReserveAsync(bytes);
@@ -18,6 +24,80 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             File.WriteAllBytes(Path.Combine(writer.DirectoryPath, "nested", "payload.bin"), new byte[bytes]);
             await writer.CommitAsync(new[] { "nested/payload.bin" });
             return new Item { Id = writer.Id, Directory = writer.DirectoryPath };
+        }
+        [Test] public async Task AdditionalArtifactsAreReservedPinnedPersistedAndEvictedWithTheirEntry()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPDiskExtend-" + Guid.NewGuid().ToString("N"));
+            FPWorkbenchDiskCacheStore store = null;
+            try {
+                store = await FPWorkbenchDiskCacheStore.OpenAsync(root, 4 * MiB); var item = await Add(store, 128);
+                using (var write = await store.ReserveExtensionAsync(item.Id, 256)) {
+                    Assert.That(store.ReservedBytes, Is.EqualTo(MiB + 256));
+                    Assert.That((await store.TrimAsync(0)).WithinTarget, Is.False);
+                    Directory.CreateDirectory(Path.Combine(write.DirectoryPath, "series-a"));
+                    File.WriteAllBytes(Path.Combine(write.DirectoryPath, "series-a", "points.bin"), new byte[256]);
+                    await write.CommitAsync(new[] { "series-a/points.bin" });
+                }
+                Assert.That(store.ReservedBytes, Is.Zero);
+                Assert.That(await store.MeasureAsync(), Is.GreaterThanOrEqualTo(384));
+                store.Dispose(); store = await FPWorkbenchDiskCacheStore.OpenAsync(root, 4 * MiB);
+                Assert.That(store.TryPin(item.Id, out var pin), Is.True); pin.Dispose();
+                Assert.That((await store.TrimAsync(0)).WithinTarget, Is.True);
+                Assert.That(Directory.Exists(item.Directory), Is.False);
+            } finally { store?.Dispose(); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+        [Test] public async Task AdditionalWritesRefuseUnknownFilesAndFailedPublicationProtectsAllContent()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPDiskExtendProtect-" + Guid.NewGuid().ToString("N"));
+            FPWorkbenchDiskCacheStore store = null;
+            try {
+                store = await FPWorkbenchDiskCacheStore.OpenAsync(root, 4 * MiB); var item = await Add(store, 128);
+                using (var write = await store.ReserveExtensionAsync(item.Id, 16)) {
+                    File.WriteAllBytes(Path.Combine(item.Directory, "plot.bin"), new byte[17]);
+                    await ExpectFailure<IOException>(async () => await write.CommitAsync(new[] { "plot.bin" }));
+                }
+                Assert.That(store.ReservedBytes, Is.Zero);
+                Assert.That((await store.TrimAsync(0)).RemovedEntries, Is.Zero);
+                await ExpectFailure<InvalidDataException>(async () => { using var write = await store.ReserveExtensionAsync(item.Id, 128); });
+                Assert.That(File.Exists(Path.Combine(item.Directory, "plot.bin")), Is.True);
+                Assert.That(File.Exists(Path.Combine(item.Directory, "nested", "payload.bin")), Is.True);
+            } finally { store?.Dispose(); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+        [Test] public async Task AdditionalWritesCannotReplacePreviouslyOwnedFilesOrIgnoreUnexpectedFiles()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPDiskExtendIdentity-" + Guid.NewGuid().ToString("N"));
+            FPWorkbenchDiskCacheStore store = null;
+            try {
+                store = await FPWorkbenchDiskCacheStore.OpenAsync(root, 4 * MiB); var item = await Add(store, 128);
+                using (var write = await store.ReserveExtensionAsync(item.Id, 256))
+                    await ExpectFailure<InvalidDataException>(async () => await write.CommitAsync(new[] { "nested/payload.bin" }));
+                using (var write = await store.ReserveExtensionAsync(item.Id, 256)) {
+                    File.WriteAllText(Path.Combine(item.Directory, "plot.bin"), "generated");
+                    File.WriteAllText(Path.Combine(item.Directory, "notes.txt"), "user");
+                    await ExpectFailure<InvalidDataException>(async () => await write.CommitAsync(new[] { "plot.bin" }));
+                }
+                Assert.That((await store.TrimAsync(0)).RemovedEntries, Is.Zero);
+                Assert.That(File.ReadAllText(Path.Combine(item.Directory, "notes.txt")), Is.EqualTo("user"));
+                Assert.That(store.ReservedBytes, Is.Zero);
+            } finally { store?.Dispose(); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+        [Test] public async Task DisposingAnAdditionalQueuedCommitRetainsItsPinAndReservationUntilCancellation()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPDiskExtendCancel-" + Guid.NewGuid().ToString("N"));
+            FPWorkbenchDiskCacheStore store = null; FPWorkbenchDiskCacheStore.ExtensionLease writer = null;
+            SemaphoreSlim serialization = null; bool held = false;
+            using var cancel = new CancellationTokenSource();
+            try {
+                store = await FPWorkbenchDiskCacheStore.OpenAsync(root, 4 * MiB); var item = await Add(store, 128);
+                writer = await store.ReserveExtensionAsync(item.Id, 128);
+                serialization = (SemaphoreSlim)typeof(FPWorkbenchDiskCacheStore).GetField("mutation", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(store);
+                held = serialization.Wait(0); Assert.That(held, Is.True);
+                var commit = writer.CommitAsync(Array.Empty<string>(), cancel.Token); writer.Dispose();
+                Assert.That(store.ReservedBytes, Is.GreaterThan(0)); Assert.Throws<InvalidOperationException>(() => store.Dispose());
+                cancel.Cancel(); await ExpectFailure<OperationCanceledException>(async () => await commit);
+                Assert.That(store.ReservedBytes, Is.Zero); serialization.Release(); held = false;
+                Assert.That((await store.TrimAsync(0)).RemovedEntries, Is.EqualTo(1), "Cancellation released the worker's cache pin.");
+            } finally { if (held) serialization.Release(); writer?.Dispose(); store?.Dispose(); if (Directory.Exists(root)) Directory.Delete(root, true); }
         }
         [Test] public async Task ReservationsEvictLeastRecentUnpinnedEntriesAndReleaseEstimatedOverhead()
         {

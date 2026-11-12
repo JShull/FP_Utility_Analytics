@@ -140,6 +140,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                         status = "Row " + (sheet.FirstRow + r + 1) + ", column " + (column + 1) + " • source: " + cell.Original;
                     }
                 }
+                DrawRowRangeOverlay(sheet, virtualPage.FirstRow + r, new Rect(rect.x, y, rect.width, 20));
             }
         }
     }

@@ -84,7 +84,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             int columnCount = columns.Length;
             if (changes != null && changes.DatasetId != DatasetId) throw new ArgumentException("Table correction source differs.");
             var evaluator = program?.CreateEvaluator(changes); int rows = (int)Math.Min(rowCount, RowCount - firstRow);
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 cancellation.ThrowIfCancellationRequested(); using var reader = dataset.OpenReaderAt(firstRow); var parser = dataset.Parser(reader, cancellation);
                 var values = new FPWorkbenchTableValue[rows][]; long characters = 0;

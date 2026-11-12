@@ -21,7 +21,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public double FirstX { get; }
         public double LastX { get; }
         public long OriginUtcTicks { get; }
-        public long RowCount => dataset.RowCount;
+        public long RowCount => binding.Rows.Count(dataset.RowCount);
+        public long FirstSourceRow => binding.Rows.First(dataset.RowCount);
         public string YName { get; private set; }
         public string XName { get; private set; }
         public string FormulaFingerprint { get; private set; }
@@ -35,13 +36,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             CancellationToken cancellation = default, FPWorkbenchChangeSnapshot changes = null, FPWorkbenchFormulaProgram calculations = null)
         {
             if (dataset == null || binding == null) throw new ArgumentNullException();
-            var settings = binding.Copy(dataset.ColumnCount);
+            var settings = binding.Copy(dataset.ColumnCount); settings.Rows.Validate(dataset.RowCount);
             if (changes != null && changes.DatasetId != dataset.DatasetId) throw new ArgumentException("Series corrections belong to another source revision.");
             if (calculations != null && calculations.DatasetId != dataset.DatasetId) throw new ArgumentException("Series calculations belong to another source revision.");
             if ((settings.HasDerivedY || settings.HasDerivedX) && (calculations == null || calculations.DatasetId != dataset.DatasetId)) throw new ArgumentException("Series calculations belong to another source revision or are missing.");
             int derived = settings.ResolveDerivedY(calculations);
             int derivedX = settings.ResolveDerivedX(calculations);
-            return Task.Run(() => Build(dataset, settings, cancellation, changes, calculations, derived, derivedX), cancellation);
+            return dataset.RunCachedAsync(() => Build(dataset, settings, cancellation, changes, calculations, derived, derivedX), cancellation);
         }
         private static FPWorkbenchSeriesCache Build(FPWorkbenchCsvDataset dataset, FPWorkbenchSeriesBinding settings, CancellationToken token, FPWorkbenchChangeSnapshot changes, FPWorkbenchFormulaProgram calculations, int derived, int derivedX)
         {
@@ -65,24 +66,27 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     writer.Write(changes?.Fingerprint ?? "original");
                     writer.Write(settings.YDerivedId ?? ""); writer.Write(formula);
                     writer.Write(settings.XDerivedId ?? "");
+                    if (settings.Rows.Enabled) { writer.Write("source-rows-v2"); writer.Write(settings.Rows.FirstRow); writer.Write(settings.Rows.EndRow); }
                 }
                 using var sha = SHA256.Create(); key = Hex(sha.ComputeHash(buffer.ToArray()));
             }
             string target = Path.Combine(dataset.CacheDirectory, "series-" + key);
+            using var publication = dataset.CacheBinding?.Begin(target, checked(settings.Rows.Count(dataset.RowCount) * 34 + 65536), token);
             if (Directory.Exists(target)) return Qualify(Open(dataset, target, settings, token));
             string staging = Path.Combine(dataset.CacheDirectory, ".series-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(staging); bool published = false;
             try
             {
                 long origin = 0; double first = 0, previous = double.NaN;
-                using (var source = dataset.OpenReader())
+                long firstRow = settings.Rows.First(dataset.RowCount), endRow = settings.Rows.End(dataset.RowCount), rowCount = endRow - firstRow;
+                using (var source = dataset.OpenReaderAt(firstRow))
                 using (var points = new BinaryWriter(File.Create(Path.Combine(staging, "points.bin"))))
                 using (var level = new BinaryWriter(File.Create(LevelPath(staging, 0))))
                 {
-                    dataset.SkipHeader(source, token); var parser = dataset.Parser(source, token);
+                    var parser = dataset.Parser(source, token);
                     var evaluator = derived < 0 && derivedX < 0 && !typed ? null : calculations.CreateEvaluator(changes);
                     FPWorkbenchSeriesBin aggregate = default;
-                    for (long row = 0; row < dataset.RowCount; row++)
+                    for (long row = firstRow; row < endRow; row++)
                     {
                         var values = parser.Read();
                         if (values == null || values.Length != dataset.ColumnCount) throw new InvalidDataException("Source row changed during series construction.");
@@ -116,19 +120,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                             if (derivedX < 0 && settings.XMode != FPWorkbenchXMode.Row && settings.XColumn != physicalY) Apply(settings.XColumn);
                             if (settings.XMode == FPWorkbenchXMode.UtcDateTime && settings.DateColumn != physicalY && settings.DateColumn != settings.XColumn) Apply(settings.DateColumn);
                         }
-                        double x = derivedX >= 0 || typed && settings.XMode == FPWorkbenchXMode.Numeric ? computedX : settings.ReadX(values, row, ref origin);
-                        if (row > 0 && x < previous) throw new InvalidDataException("X decreases at logical row " + row + ". A sorted/segmented mapping is required; samples were not reordered.");
-                        if (row == 0) first = x;
+                        double x = derivedX >= 0 || typed && settings.XMode == FPWorkbenchXMode.Numeric ? computedX : settings.ReadX(values, row, ref origin, row == firstRow);
+                        if (row > firstRow && x < previous) throw new InvalidDataException("X decreases at logical row " + row + ". A sorted/segmented mapping is required; samples were not reordered.");
+                        if (row == firstRow) first = x;
                         if (!FPWorkbenchSeriesBinding.Finite(x - first)) throw new InvalidDataException("X extent exceeds finite double range at logical row " + row + ".");
                         if (derived < 0 && !typed && (!double.TryParse(values[settings.YColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out y) || !FPWorkbenchSeriesBinding.Finite(y))) y = double.NaN;
-                        bool gap = row > 0 && settings.MaximumGap > 0 && x - previous > settings.MaximumGap;
+                        bool gap = row > firstRow && settings.MaximumGap > 0 && x - previous > settings.MaximumGap;
                         var point = new FPWorkbenchSeriesPoint(x, y, row, gap);
-                        WritePoint(points, point); aggregate.Merge(FPWorkbenchSeriesBin.Point(row, point));
-                        if ((row + 1) % 256 == 0 || row + 1 == dataset.RowCount) { WriteBin(level, aggregate); aggregate = default; }
+                        WritePoint(points, point); aggregate.Merge(FPWorkbenchSeriesBin.Point(row - firstRow, point));
+                        if ((row - firstRow + 1) % 256 == 0 || row + 1 == endRow) { WriteBin(level, aggregate); aggregate = default; }
                         previous = x;
                     }
                 }
-                int count = 1; long bins = Ceiling(dataset.RowCount, 256);
+                int count = 1; long bins = Ceiling(rowCount, 256);
                 while (bins > 1)
                 {
                     token.ThrowIfCancellationRequested();
@@ -153,6 +157,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 token.ThrowIfCancellationRequested();
                 try { Directory.Move(staging, target); published = true; }
                 catch (IOException) when (Directory.Exists(target)) { return Qualify(Open(dataset, target, settings, token)); }
+                var owned = new string[count + 2]; owned[0] = "points.bin"; owned[1] = "series.bin";
+                for (int i = 0; i < count; i++) owned[i + 2] = Path.GetFileName(LevelPath(target, i));
+                publication?.Complete(owned);
                 return Qualify(new FPWorkbenchSeriesCache(dataset, target, settings, count, first, previous, origin));
             }
             finally { if (!published && Directory.Exists(staging)) Directory.Delete(staging, true); }
@@ -167,8 +174,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             double first = metadata.ReadDouble(), last = metadata.ReadDouble(); long origin = metadata.ReadInt64();
             if (!FPWorkbenchSeriesBinding.Finite(first) || !FPWorkbenchSeriesBinding.Finite(last) || last < first) throw new InvalidDataException("Invalid series extent.");
             string points = Path.Combine(target, "points.bin");
-            if (new FileInfo(points).Length != checked(dataset.RowCount * PointBytes) || Hash(points, token) != metadata.ReadString()) throw new InvalidDataException("Series point checksum/size mismatch.");
-            long count = Ceiling(dataset.RowCount, 256);
+            if (new FileInfo(points).Length != checked(settings.Rows.Count(dataset.RowCount) * PointBytes) || Hash(points, token) != metadata.ReadString()) throw new InvalidDataException("Series point checksum/size mismatch.");
+            long count = Ceiling(settings.Rows.Count(dataset.RowCount), 256);
             for (int i = 0; i < levels; i++)
             {
                 string path = LevelPath(target, i);
@@ -182,12 +189,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         /// <summary>Reads only cached endpoint records; never reparses CSV or materializes the selected range.</summary>
         public Task<FPWorkbenchSeriesRowExtent> ReadRowExtentAsync(long firstRow, long endRow, CancellationToken cancellation = default)
         {
-            if (firstRow < 0 || endRow <= firstRow || endRow > RowCount) throw new ArgumentOutOfRangeException("Choose a nonempty source row range inside this series.");
-            return Task.Run(() => {
+            if (firstRow < FirstSourceRow || endRow <= firstRow || endRow > FirstSourceRow + RowCount) throw new ArgumentOutOfRangeException("Choose a nonempty source row range inside this series.");
+            return dataset.RunCachedAsync(() => {
                 cancellation.ThrowIfCancellationRequested(); dataset.ValidateUnchanged();
                 using var reader = new BinaryReader(File.OpenRead(Path.Combine(DirectoryPath, "points.bin")));
                 if (reader.BaseStream.Length != checked(RowCount * PointBytes)) throw new InvalidDataException("Series point payload length changed.");
-                var first = ReadAt(reader, firstRow); var last = endRow == firstRow + 1 ? first : ReadAt(reader, endRow - 1);
+                var first = ReadAt(reader, firstRow - FirstSourceRow); var last = endRow == firstRow + 1 ? first : ReadAt(reader, endRow - FirstSourceRow - 1);
                 if (first.Row != firstRow || last.Row != endRow - 1 || !FPWorkbenchSeriesBinding.Finite(first.X) || !FPWorkbenchSeriesBinding.Finite(last.X) || last.X < first.X)
                     throw new InvalidDataException("Cached row identity/X endpoints differ from the verified series.");
                 cancellation.ThrowIfCancellationRequested(); dataset.ValidateUnchanged();
@@ -197,7 +204,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public Task<FPWorkbenchSeriesView> QueryAsync(double startX, double endX, int desiredBins = 512, CancellationToken cancellation = default)
         {
             if (!FPWorkbenchSeriesBinding.Finite(startX) || !FPWorkbenchSeriesBinding.Finite(endX) || endX <= startX || desiredBins < 1 || desiredBins > 4096) throw new ArgumentException("A finite increasing range and 1–4096 bins are required.");
-            return Task.Run(() => Query(startX, endX, desiredBins, cancellation), cancellation);
+            return dataset.RunCachedAsync(() => Query(startX, endX, desiredBins, cancellation), cancellation);
         }
         private FPWorkbenchSeriesView Query(double start, double end, int bins, CancellationToken token)
         {

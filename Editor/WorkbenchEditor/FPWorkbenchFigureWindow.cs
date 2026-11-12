@@ -32,7 +32,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnEnable()
         {
-            windowActive = true;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
             minSize = new Vector2(420, 260);
             EditorApplication.update += Tick; AssemblyReloadEvents.beforeAssemblyReload += Capture;
             if (string.IsNullOrEmpty(figureId) || string.IsNullOrEmpty(metadata)) return;
@@ -47,14 +47,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnDisable()
         {
-            windowActive = false;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable);
             imageJob?.Dispose(); imageJob = null;
             presentationUndo?.Dispose(); presentationUndo = null;
             Capture(); EditorApplication.update -= Tick; AssemblyReloadEvents.beforeAssemblyReload -= Capture;
             cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
             if (openingMemory != null) openingMemory.ReleaseAfter(opening);
             else if (opening != null) opening.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
-            openingMemory = null; pendingOpening = false; opening = null;
+            openingMemory = null; pendingOpening = false; FPWorkbenchEditorCache.Abandon(opening); opening = null;
             lease?.Dispose(); lease = null;
         }
         private void Capture()
@@ -91,7 +91,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     else error = "Figure source revision changed; reopen/relink the workbook.";
                 }
                 else if (opening.IsFaulted) error = opening.Exception.GetBaseException().Message;
-                opening = null; Repaint();
+                FPWorkbenchEditorCache.Abandon(opening); opening = null; Repaint();
             }
             if (lease == null) return;
             var session = lease.Session; bool changed = session.Poll();
@@ -103,6 +103,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (!string.IsNullOrEmpty(error)) { EditorGUILayout.HelpBox(error, MessageType.Error); return; }
             if (lease == null) { EditorGUILayout.HelpBox(pendingOpening ? "Waiting for shared memory/background capacity…" : "Verifying figure source…", MessageType.Info); return; }
             var session = lease.Session;
+            var rows = session.RequestedBinding.Rows;
+            if (rows.Enabled) GUILayout.Label("Inherited sheet rows: " + (rows.FirstRow + 1).ToString("N0") + " - " + rows.EndRow.ToString("N0") + " (table row numbers)", EditorStyles.miniLabel);
             presentationUndo ??= new FPWorkbenchPresentationUndo(Repaint);
             presentationUndo.Begin(session.Settings);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))

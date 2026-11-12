@@ -12,7 +12,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     using FuzzPhyte.Utility.Editor;
 
     /// <summary>Bounded XYZ snapshot preview. One mesh per view; camera controls reuse the shared preview utility.</summary>
-    public sealed class FPWorkbenchPoint3DWindow : EditorWindow
+    public sealed partial class FPWorkbenchPoint3DWindow : EditorWindow
     {
         [SerializeField] private string figureId = Guid.NewGuid().ToString("N"), lastFigureMetadata;
         internal string WorkbookId => workbook;
@@ -24,10 +24,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private float pointSize = 4, zoom = FPMeshPreviewEditorUtility.DefaultPreviewZoom;
         [SerializeField] private Quaternion orbit = Quaternion.Euler(25, -35, 0);
         [SerializeField] private Vector3 pan;
+        [SerializeField] private float nearClip = .001f;
         [SerializeField] private FPMeshPreviewProjection projection;
         [SerializeField] private bool invertOrbit, clip, showClip;
+        [SerializeField] private bool showOrigin = true, showXAxis = true, showYAxis = true, showZAxis = true, showAxisValues = true;
         [SerializeField] private double minX, maxX = 1, minY, maxY = 1, minZ, maxZ = 1;
+        [SerializeField] private string sourceSheetId = "";
+        [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
         private FPWorkbenchCsvDataset dataset;
+        private IDisposable diskLease;
         private FPWorkbenchFormulaProgram program;
         private FPWorkbenchChangeSnapshot edits;
         private string[] names;
@@ -54,6 +59,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private int activeAxis = -1;
         private int[] appliedColumns;
         private bool selected;
+        private int selectedIndex = -1;
         private FPWorkbenchSpatialPoint selection;
         [SerializeField] private int exportWidth = 1600, exportHeight = 1200;
         private FPWorkbenchEditorImageJob imageJob;
@@ -64,6 +70,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             public int Version = 1, RenderedPoints;
             public long MatchingPoints;
             public bool Sampled;
+            public bool Annotated;
+            public string[] AxisLabels, AxisUnits;
+            public double[] AxisBounds;
+            public int PointBudget;
+            public long InvalidSourceRows;
             public double OriginX, OriginY, OriginZ, SourceUnitsPerLocalUnit, MaximumLocalError;
             public FPWorkbenchFigureDocument Figure;
         }
@@ -77,20 +88,23 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 throw new IOException("Choose a new .fpfigure output directory; existing outputs are never overwritten.");
             string parent = Path.GetDirectoryName(output);
             if (!Directory.Exists(parent)) throw new DirectoryNotFoundException(parent);
-            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, 0);
+            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, 128);
             var figure = DescribeFigure(); figure.Validate();
             var frame = batch.Prepared.Frame;
             var metadata = new ImageProvenance { SourcePath = dataset.SourcePath, Width = width, Height = height,
                 RenderedPoints = batch.View.Points.Count, MatchingPoints = batch.View.MatchingCount, Sampled = batch.View.Decimated,
                 OriginX = frame.OriginX, OriginY = frame.OriginY, OriginZ = frame.OriginZ, SourceUnitsPerLocalUnit = frame.SourceUnitsPerLocalUnit,
-                MaximumLocalError = batch.Prepared.MaximumLocalError, Figure = figure };
-            PreviewRenderUtility export = null; Texture2D image = null;
+                MaximumLocalError = batch.Prepared.MaximumLocalError, Figure = figure, PointBudget = batch.Budget, InvalidSourceRows = batch.Cache.InvalidCount };
+            PreviewRenderUtility export = null; Texture2D image = null, annotated = null;
             try {
-                export = new PreviewRenderUtility(); var rect = new Rect(0, 0, width, height);
+                export = new PreviewRenderUtility(); bool label = width >= 640 && height >= 480;
+                Rect plot = label ? new Rect(40, 125, width - 80, height - 210) : new Rect(0, 0, width, height);
+                var rect = new Rect(0, 0, plot.width, plot.height);
                 export.BeginStaticPreview(rect); RenderPoints(export, rect); image = export.EndStaticPreview();
-                return reservation.Publish(output, image.GetPixels32(), width, height, metadata, imageJob?.Token ?? default);
+                if (label) { annotated = AnnotatePointImage(image, export.camera, plot, width, height, metadata); metadata.Annotated = true; }
+                return reservation.Publish(output, (annotated ?? image).GetPixels32(), width, height, metadata, imageJob?.Token ?? default);
             }
-            finally { if (image != null) DestroyImmediate(image); export?.Cleanup(); }
+            finally { if (image != null) DestroyImmediate(image); if (annotated != null) DestroyImmediate(annotated); export?.Cleanup(); }
         }
         [SerializeField] private bool showAppearancePresets;
         private FPWorkbenchPresentationUndoState appearanceUndo;
@@ -117,15 +131,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var preset = FPWorkbenchPoint3DPreset.Parse(appearanceUndo.Json); observedAppearance = appearanceUndo.Json;
             pointColor = preset.Color; pointSize = preset.PointSize; Repaint();
         }
-        private sealed class Batch { public FPWorkbenchPointCache Cache; public FPWorkbenchPointView View; public FPWorkbenchPreparedPoints Prepared; public int[] Columns; public double Milliseconds; public bool Clip; public FPWorkbenchSpatialBounds Limits; public int Budget; public FPWorkbenchInvalidPolicy Policy; }
+        private sealed class Batch { public FPWorkbenchRowRange Rows; public FPWorkbenchPointCache Cache; public FPWorkbenchPointView View; public FPWorkbenchPreparedPoints Prepared; public int[] Columns; public double Milliseconds; public bool Clip; public FPWorkbenchSpatialBounds Limits; public int Budget; public FPWorkbenchInvalidPolicy Policy; }
         private bool Busy => opening != null || pendingOpening || building != null || pendingBuild != null || preparing != null || pendingBatch != null;
         public static FPWorkbenchPoint3DWindow Open(string owner, FPWorkbenchCsvDataset source, int x, int y, int z,
-            FPWorkbenchFormulaProgram formulas = null, FPWorkbenchChangeSnapshot corrections = null)
+            FPWorkbenchFormulaProgram formulas = null, FPWorkbenchChangeSnapshot corrections = null, FPWorkbenchRowRange rows = null, string sheetId = "")
         {
             var schema = new FPWorkbenchTableView(source, formulas); schema.ColumnId(x); schema.ColumnId(y); schema.ColumnId(z);
             if (corrections != null && corrections.DatasetId != source.DatasetId) throw new ArgumentException("3D correction source differs.");
             var window = CreateInstance<FPWorkbenchPoint3DWindow>(); window.workbook = owner; window.cacheDirectory = source.CacheDirectory; window.datasetId = source.DatasetId;
             window.xColumn = x; window.yColumn = y; window.zColumn = z; window.calculations = formulas == null ? null : JsonUtility.ToJson(formulas.Definition); window.corrections = corrections?.Json;
+            window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange(); window.rowRange.Validate(source.RowCount); window.sourceSheetId = sheetId;
             window.Attach(source); window.BeginBuild(); FPDataWorkbenchWindow.RememberFigure(owner, window.DescribeFigure()); window.titleContent = new GUIContent("3D Point Figure"); window.Show(); return window;
         }
         internal FPWorkbenchFigureDocument DescribeFigure()
@@ -139,12 +154,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             string Derived(int c) => c < dataset.ColumnCount ? "" : program.ColumnId(c - dataset.ColumnCount);
             int Physical(int c) => c < dataset.ColumnCount ? c : 0;
             var bounds = batch == null ? (clip ? new FPWorkbenchSpatialBounds(minX, maxX, minY, maxY, minZ, maxZ) : default) : batch.Limits;
-            var figure = new FPWorkbenchFigureDocument { Id = figureId, Name = "3D point figure", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Point3D,
+            var figure = new FPWorkbenchFigureDocument { Id = figureId, Name = "3D point figure", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Point3D, Rows = rowRange.Copy(), SourceSheetId = sourceSheetId,
                 Binding = new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, XColumn = Physical(axes[0]), YColumn = Physical(axes[1]), XDerivedId = Derived(axes[0]), YDerivedId = Derived(axes[1]) },
                 PointBudget = batch?.Budget ?? pointBudget, InvalidPolicy = batch?.Policy ?? invalidPolicy, Colors = new[] { pointColor },
                 Spatial = new FPWorkbenchPoint3DSettings { ZColumn = Physical(axes[2]), ZDerivedId = Derived(axes[2]), Clip = batch?.Clip ?? clip,
                     MinimumX = bounds.MinimumX, MaximumX = bounds.MaximumX, MinimumY = bounds.MinimumY, MaximumY = bounds.MaximumY, MinimumZ = bounds.MinimumZ, MaximumZ = bounds.MaximumZ,
-                    Orbit = orbit, Pan = pan, Zoom = zoom, PointSize = pointSize, Orthographic = projection == FPMeshPreviewProjection.Orthographic, InvertOrbit = invertOrbit },
+                    Orbit = orbit, Pan = pan, Zoom = zoom, PointSize = pointSize, Orthographic = projection == FPMeshPreviewProjection.Orthographic, InvertOrbit = invertOrbit,
+                    NearClip = nearClip, ShowOrigin = showOrigin, ShowXAxis = showXAxis, ShowYAxis = showYAxis, ShowZAxis = showZAxis, ShowAxisValues = showAxisValues },
                 HasCalculationSnapshot = program != null, CalculationSnapshot = program?.Definition,
                 HasCorrectionSnapshot = edits != null, CorrectionSnapshot = edits == null ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(edits.Json) };
             lastFigureMetadata = JsonUtility.ToJson(figure); return figure;
@@ -161,21 +177,29 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var window = CreateInstance<FPWorkbenchPoint3DWindow>(); window.workbook = owner; window.figureId = figure.Id; window.cacheDirectory = source.CacheDirectory; window.datasetId = source.DatasetId;
             window.xColumn = x; window.yColumn = y; window.zColumn = z; window.pointBudget = figure.PointBudget; window.invalidPolicy = figure.InvalidPolicy;
             window.calculations = formulas == null ? null : JsonUtility.ToJson(formulas.Definition); window.corrections = figure.HasCorrectionSnapshot ? JsonUtility.ToJson(figure.CorrectionSnapshot) : null;
+            window.rowRange = figure.Rows.Copy(); window.sourceSheetId = figure.SourceSheetId;
             window.clip = spatial.Clip; window.minX = spatial.MinimumX; window.maxX = spatial.MaximumX; window.minY = spatial.MinimumY; window.maxY = spatial.MaximumY; window.minZ = spatial.MinimumZ; window.maxZ = spatial.MaximumZ;
             window.orbit = spatial.Orbit; window.pan = spatial.Pan; window.zoom = spatial.Zoom; window.pointSize = spatial.PointSize; window.pointColor = figure.Colors[0];
             window.projection = spatial.Orthographic ? FPMeshPreviewProjection.Orthographic : FPMeshPreviewProjection.Perspective; window.invertOrbit = spatial.InvertOrbit;
+            window.nearClip = spatial.NearClip; window.showOrigin = spatial.ShowOrigin; window.showXAxis = spatial.ShowXAxis; window.showYAxis = spatial.ShowYAxis; window.showZAxis = spatial.ShowZAxis; window.showAxisValues = spatial.ShowAxisValues;
             window.Attach(source); window.DescribeFigure(); window.BeginBuild(); window.titleContent = new GUIContent(figure.Name); window.Show(); return window;
+        }
+        internal void ApplySheetRows(FPWorkbenchFigureDocument figure)
+        {
+            CancelPointUpdate(); rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId;
+            lastFigureMetadata = JsonUtility.ToJson(figure); selected = false; error = null;
+            if (dataset != null) BeginBuild(); Repaint();
         }
         private void OnEnable()
         {
-            windowActive = true;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
             minSize = new Vector2(760, 520); cancellation = new CancellationTokenSource(); preview = new PreviewRenderUtility();
             EditorApplication.update += Tick;
             pendingOpening = !string.IsNullOrEmpty(cacheDirectory);
         }
         private void OnDisable()
         {
-            windowActive = false;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); diskLease?.Dispose(); diskLease = null;
             imageJob?.Dispose(); imageJob = null;
             Undo.undoRedoPerformed -= RestoreAppearance;
             if (appearanceUndo != null) { Undo.ClearUndo(appearanceUndo); DestroyImmediate(appearanceUndo); appearanceUndo = null; }
@@ -185,7 +209,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (openingMemory != null) openingMemory.ReleaseAfter(opening); else Observe(opening);
             openingMemory = null; pendingOpening = false;
             if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
-            buildMemory = null; pendingBuild = null; opening = null; building = null;
+            buildMemory = null; pendingBuild = null; FPWorkbenchEditorCache.Abandon(opening); opening = null; building = null;
             if (preparationMemory != null) preparationMemory.ReleaseAfter(preparing); else Observe(preparing);
             preparationMemory = null; preparing = null; pendingBatch = null; waitingForMemory = false;
             batchMemory?.Dispose(); batchMemory = null;
@@ -201,7 +225,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (edits != null && edits.DatasetId != datasetId) throw new InvalidOperationException("3D correction source differs.");
             var schema = new FPWorkbenchTableView(source, program); schema.ColumnId(xColumn); schema.ColumnId(yColumn); schema.ColumnId(zColumn);
             names = new string[schema.ColumnCount]; for (int c = 0; c < names.Length; c++) names[c] = (c >= source.ColumnCount ? "ƒ " : "") + schema.ColumnName(c);
-            dataset = source;
+            var pin = FPWorkbenchEditorCache.Retain(source); diskLease?.Dispose(); diskLease = pin; dataset = source;
         }
         private void BeginBuild()
         {
@@ -210,17 +234,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 var columns = new[] { xColumn, yColumn, zColumn }; var bounds = clip ? new FPWorkbenchSpatialBounds(minX, maxX, minY, maxY, minZ, maxZ) : default;
                 var source = dataset; var formulas = program; var changes = edits; var policy = invalidPolicy;
-                var budget = pointBudget; var clipping = clip; var token = cancellation.Token;
-                pendingBuild = () => Build(source, columns, formulas, changes, policy, budget, clipping, bounds, token); error = null;
+                var budget = pointBudget; var clipping = clip; var token = cancellation.Token; var rows = rowRange.Copy();
+                pendingBuild = () => Build(source, columns, formulas, changes, policy, budget, clipping, bounds, rows, token); error = null;
                 waitingForMemory = !FPWorkbenchEditorResources.TryStartSource(dataset, ref pendingBuild, ref building, ref buildMemory);
             }
             catch (Exception ex) { error = ex.Message; }
         }
         private static async Task<Batch> Build(FPWorkbenchCsvDataset source, int[] columns, FPWorkbenchFormulaProgram formulas, FPWorkbenchChangeSnapshot changes,
-            FPWorkbenchInvalidPolicy policy, int budget, bool clip, FPWorkbenchSpatialBounds limits, CancellationToken token)
+            FPWorkbenchInvalidPolicy policy, int budget, bool clip, FPWorkbenchSpatialBounds limits, FPWorkbenchRowRange rows, CancellationToken token)
         {
-            var clock = Stopwatch.StartNew(); var cache = await FPWorkbenchPointCache.BuildAsync(source, columns, formulas, changes, policy, token).ConfigureAwait(false);
-            return new Batch { Cache = cache, Columns = columns, Clip = clip, Limits = clip ? limits : cache.Bounds, Budget = budget, Policy = policy, Milliseconds = clock.Elapsed.TotalMilliseconds };
+            var clock = Stopwatch.StartNew(); var cache = await FPWorkbenchPointCache.BuildAsync(source, columns, formulas, changes, policy, token, rows).ConfigureAwait(false);
+            return new Batch { Rows = rows.Copy(), Cache = cache, Columns = columns, Clip = clip, Limits = clip ? limits : cache.Bounds, Budget = budget, Policy = policy, Milliseconds = clock.Elapsed.TotalMilliseconds };
         }
         private static async Task<Batch> Prepare(Batch next, CancellationToken token)
         {
@@ -246,7 +270,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 var work = opening; opening = null;
                 openingMemory?.Dispose(); openingMemory = null;
-                try { Attach(work.GetAwaiter().GetResult()); BeginBuild(); } catch (Exception ex) { error = ex.Message; } Repaint();
+                try { Attach(work.GetAwaiter().GetResult()); BeginBuild(); } catch (Exception ex) { error = ex.Message; } finally { FPWorkbenchEditorCache.Abandon(work); } Repaint();
             }
             if (building != null && building.IsCompleted)
             {
@@ -309,6 +333,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 GUILayout.Label("Budget", GUILayout.Width(45)); pointBudget = Mathf.Clamp(EditorGUILayout.IntField(pointBudget, GUILayout.Width(65)), 1, 65536);
                 invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup(invalidPolicy, GUILayout.Width(70));
             }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label("Show", GUILayout.Width(40));
+                showOrigin = GUILayout.Toggle(showOrigin, new GUIContent("Origin (0,0,0)", "Marks source-coordinate zero when it lies inside the displayed bounds."));
+                showXAxis = GUILayout.Toggle(showXAxis, "X axis"); showYAxis = GUILayout.Toggle(showYAxis, "Y axis"); showZAxis = GUILayout.Toggle(showZAxis, "Z axis");
+                showAxisValues = GUILayout.Toggle(showAxisValues, new GUIContent("Axis values", "Source-coordinate ticks on each visible axis; units follow the bound column."), GUILayout.Width(95));
+                GUILayout.Label(new GUIContent("Near clip", "Small positive camera distance in normalized preview units; does not change source-coordinate clipping."), GUILayout.Width(60));
+                float nextNear = EditorGUILayout.FloatField(nearClip, GUILayout.Width(70));
+                if (!float.IsNaN(nextNear) && !float.IsInfinity(nextNear)) nearClip = Mathf.Clamp(nextNear, .00001f, 1);
+            }
+            FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
             string beforeAppearance = AppearanceJson();
             using (new EditorGUILayout.HorizontalScope())
             { pointColor = EditorGUILayout.ColorField("Point color", pointColor); pointSize = EditorGUILayout.Slider("Pixels", pointSize, 1, 32); }
@@ -366,6 +401,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void DrawPreview(Rect rect)
         {
             previewRect = rect;
+            if (batch != null && batch.Rows != null && !batch.Rows.SameAs(rowRange)) { GUI.Label(rect, "Updating sheet row range..."); return; }
             if (renderer?.Mesh == null || batch == null) { GUI.Label(rect, "Choose numeric XYZ columns and Apply."); return; }
             int control = GUIUtility.GetControlID(78310, FocusType.Passive); var e = Event.current;
             if (rect.Contains(e.mousePosition))
@@ -395,6 +431,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 preview.BeginPreview(rect, GUIStyle.none); RenderPoints(preview, rect); Camera camera = preview.camera;
                 previewTexture = preview.EndPreview(); GUI.DrawTexture(rect, previewTexture, ScaleMode.StretchToFill, false);
+                DrawPointAnnotations(rect, camera);
                 FPMeshPreviewEditorUtility.DrawSceneOrientationGizmo(rect, camera, projection);
             }
             FPMeshPreviewEditorUtility.DrawOrbitGizmo(rect, (direction, up) => { orbit = Quaternion.LookRotation(direction, up); Repaint(); });
@@ -407,17 +444,126 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             camera.transform.SetPositionAndRotation(bounds.center + pan - orbit * Vector3.forward * distance, orbit);
             camera.orthographic = projection == FPMeshPreviewProjection.Orthographic;
             camera.orthographicSize = FPMeshPreviewEditorUtility.CalculateOrthographicSize(bounds, rect, orbit) * zoom;
-            float radius = Math.Max(.1f, bounds.extents.magnitude); camera.nearClipPlane = Math.Max(.001f, distance - radius * 2.4f); camera.farClipPlane = distance + radius * 3.4f;
+            float radius = Math.Max(.1f, bounds.extents.magnitude); camera.nearClipPlane = nearClip; camera.farClipPlane = Math.Max(nearClip + 1, distance + radius * 3.4f + pan.magnitude);
             renderer.SetAppearance(pointColor, pointSize); target.DrawMesh(renderer.Mesh, Matrix4x4.identity, renderer.Material, 0); target.Render(true);
+        }
+        private bool AxisVisible(int axis) => axis == 0 ? showXAxis : axis == 1 ? showYAxis : showZAxis;
+        private Vector3 SourceLocal(double x, double y, double z)
+        {
+            var frame = batch.Prepared.Frame;
+            return new Vector3((float)((x - frame.OriginX) / frame.SourceUnitsPerLocalUnit),
+                (float)((y - frame.OriginY) / frame.SourceUnitsPerLocalUnit), (float)((z - frame.OriginZ) / frame.SourceUnitsPerLocalUnit));
+        }
+        private static bool ProjectPoint(Camera camera, Rect rect, Vector3 local, out Vector3 point)
+        {
+            var p = camera.WorldToViewportPoint(local);
+            point = new Vector3(rect.x + p.x * rect.width, rect.y + (1 - p.y) * rect.height);
+            return p.z > camera.nearClipPlane && p.z < camera.farClipPlane && rect.Contains(point);
+        }
+        private static bool ClipInterval(float start, float delta, float min, float max, ref float low, ref float high)
+        {
+            if (Math.Abs(delta) < 1e-20f) return start >= min && start <= max;
+            float a = (min - start) / delta, b = (max - start) / delta;
+            low = Math.Max(low, Math.Min(a, b)); high = Math.Min(high, Math.Max(a, b)); return low <= high;
+        }
+        private static bool ProjectSegment(Camera camera, Rect rect, Vector3 a, Vector3 b, out Vector3 first, out Vector3 last, bool topDown = true)
+        {
+            first = last = default;
+            float low = 0, high = 1;
+            float az = camera.transform.InverseTransformPoint(a).z, bz = camera.transform.InverseTransformPoint(b).z;
+            if (!ClipInterval(az, bz - az, camera.nearClipPlane, camera.farClipPlane, ref low, ref high)) return false;
+            var p = camera.WorldToViewportPoint(Vector3.LerpUnclamped(a, b, low));
+            var q = camera.WorldToViewportPoint(Vector3.LerpUnclamped(a, b, high));
+            low = 0; high = 1;
+            if (!ClipInterval(p.x, q.x - p.x, 0, 1, ref low, ref high) || !ClipInterval(p.y, q.y - p.y, 0, 1, ref low, ref high)) return false;
+            var start = Vector3.LerpUnclamped(p, q, low); var end = Vector3.LerpUnclamped(p, q, high);
+            first = new Vector3(rect.x + start.x * rect.width, rect.y + (topDown ? 1 - start.y : start.y) * rect.height);
+            last = new Vector3(rect.x + end.x * rect.width, rect.y + (topDown ? 1 - end.y : end.y) * rect.height);
+            return true;
+        }
+        private bool ProjectSelection(Camera camera, Rect rect, out Vector3 point)
+        {
+            point = default;
+            return selected && selectedIndex >= 0 && selectedIndex < batch.Prepared.Positions.Count &&
+                ProjectPoint(camera, rect, batch.Prepared.Positions[selectedIndex], out point);
+        }
+        private bool ProjectOrigin(Camera camera, Rect rect, out Vector3 point)
+        {
+            point = default; var b = batch.View.Bounds;
+            return b.MinimumX <= 0 && b.MaximumX >= 0 && b.MinimumY <= 0 && b.MaximumY >= 0 && b.MinimumZ <= 0 && b.MaximumZ >= 0 &&
+                ProjectPoint(camera, rect, SourceLocal(0, 0, 0), out point);
+        }
+        private Vector3 AxisTick(int axis, int tick, out string label)
+        {
+            var b = batch.View.Bounds;
+            double min = axis == 0 ? b.MinimumX : axis == 1 ? b.MinimumY : b.MinimumZ;
+            double max = axis == 0 ? b.MaximumX : axis == 1 ? b.MaximumY : b.MaximumZ;
+            double t = tick / 4d, value = min * (1 - t) + max * t;
+            string format = min != max && min.ToString("G5", CultureInfo.InvariantCulture) == max.ToString("G5", CultureInfo.InvariantCulture) ? "G17" : "G5";
+            label = value.ToString(format, CultureInfo.InvariantCulture);
+            int c = batch.Columns[axis];
+            string units = program == null ? "unspecified" : c < dataset.ColumnCount ? program.SourceUnits(c) : program.Units(c - dataset.ColumnCount);
+            if (tick == 4 && units != "unspecified" && !string.IsNullOrEmpty(units)) label += " " + units;
+            return SourceLocal(axis == 0 ? value : b.MinimumX, axis == 1 ? value : b.MinimumY, axis == 2 ? value : b.MinimumZ);
+        }
+        private void DrawPointAnnotations(Rect rect, Camera camera)
+        {
+            // Screen overlays use the exact prepared frame/camera, without rebuilding points or changing picking.
+            GUI.BeginGroup(rect); Handles.BeginGUI(); var oldColor = Handles.color;
+            try
+            {
+                var area = new Rect(0, 0, rect.width, rect.height); var b = batch.View.Bounds;
+                var corners = new Vector3[8]; var local = new Vector3[8]; var visible = new bool[8];
+                for (int i = 0; i < 8; i++) {
+                    local[i] = SourceLocal((i & 1) == 0 ? b.MinimumX : b.MaximumX, (i & 2) == 0 ? b.MinimumY : b.MaximumY, (i & 4) == 0 ? b.MinimumZ : b.MaximumZ);
+                    visible[i] = ProjectPoint(camera, area, local[i], out corners[i]);
+                }
+                for (int a = 0; a < 3; a++)
+                {
+                    if (!AxisVisible(a)) continue;
+                    Handles.color = new Color(.45f, .45f, .45f);
+                    for (int i = 0; i < 8; i++) { int j = i ^ (1 << a); if (i < j && ProjectSegment(camera, area, local[i], local[j], out var first, out var last)) Handles.DrawAAPolyLine(1, first, last); }
+                    Handles.color = a == 0 ? new Color(1, .4f, .35f) : a == 1 ? new Color(.35f, .9f, .45f) : new Color(.35f, .65f, 1);
+                    int end = 1 << a;
+                    if (ProjectSegment(camera, area, local[0], local[end], out var start, out var finish)) Handles.DrawAAPolyLine(2, start, finish);
+                    if (showAxisValues && ProjectSegment(camera, area, local[0], local[end], out var tickStart, out var tickEnd)) {
+                        var delta = tickEnd - tickStart; var normal = new Vector3(-delta.y, delta.x).normalized;
+                        Rect previous = default;
+                        for (int tick = 0; tick <= 4; tick++) {
+                            var tickLocal = AxisTick(a, tick, out var text);
+                            if (!ProjectPoint(camera, area, tickLocal, out var point)) continue;
+                            var size = EditorStyles.miniLabel.CalcSize(new GUIContent(text)); var anchor = point + normal * 10;
+                            var labelRect = new Rect(anchor.x - size.x / 2, anchor.y - size.y / 2, size.x + 4, size.y);
+                            if (tick > 0 && previous.Overlaps(labelRect)) continue;
+                            Handles.DrawAAPolyLine(1, point - normal * 3, point + normal * 3);
+                            EditorGUI.DrawRect(labelRect, new Color(.1f, .1f, .1f, .85f)); GUI.Label(labelRect, text, EditorStyles.miniLabel); previous = labelRect;
+                        }
+                    }
+                    if (visible[end]) {
+                        GUI.Label(new Rect(Mathf.Clamp(corners[end].x + 5, 0, Math.Max(0, area.width - 20)), Mathf.Clamp(corners[end].y - 18, 0, Math.Max(0, area.height - 20)), 20, 20), a == 0 ? "X" : a == 1 ? "Y" : "Z", EditorStyles.boldLabel);
+                    }
+                }
+                if (showOrigin && ProjectOrigin(camera, area, out var origin)) {
+                    Handles.color = Color.white; Handles.DrawWireDisc(origin, Vector3.forward, 4);
+                    Handles.DrawAAPolyLine(2, origin - Vector3.right * 7, origin + Vector3.right * 7);
+                    Handles.DrawAAPolyLine(2, origin - Vector3.up * 7, origin + Vector3.up * 7);
+                    GUI.Label(new Rect(origin.x + 8, origin.y + 5, 90, 20), "(0, 0, 0)", EditorStyles.miniLabel);
+                }
+                if (ProjectSelection(camera, area, out var picked)) {
+                    Handles.color = Color.black; Handles.DrawWireDisc(picked, Vector3.forward, 9);
+                    Handles.color = Color.yellow; Handles.DrawWireDisc(picked, Vector3.forward, 7);
+                }
+            }
+            finally { Handles.color = oldColor; Handles.EndGUI(); GUI.EndGroup(); }
         }
         private void Inspect(Rect rect, Vector2 mouse)
         {
-            selected = false; double best = 100; float depth = float.PositiveInfinity;
+            selected = false; selectedIndex = -1; double best = 100; float depth = float.PositiveInfinity;
             for (int i = 0; i < batch.Prepared.Positions.Count; i++)
             {
                 var p = preview.camera.WorldToViewportPoint(batch.Prepared.Positions[i]); if (p.z <= preview.camera.nearClipPlane) continue;
                 double dx = rect.x + p.x * rect.width - mouse.x, dy = rect.y + (1 - p.y) * rect.height - mouse.y, distance = dx * dx + dy * dy;
-                if (distance < best || distance == best && p.z < depth) { best = distance; depth = p.z; selection = batch.View.Points[i]; selected = true; }
+                if (distance < best || distance == best && p.z < depth) { best = distance; depth = p.z; selection = batch.View.Points[i]; selectedIndex = i; selected = true; }
             }
         }
     }

@@ -95,7 +95,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             calculationName = EditorGUILayout.TextField("Name", calculationName);
             calculationExpression = EditorGUILayout.TextField("Expression", calculationExpression);
             calculationUnits = EditorGUILayout.TextField(new GUIContent("Expected units", "Optional check against explicit source unit declarations. No implicit unit conversion."), calculationUnits);
-            EditorGUILayout.HelpBox("C1/C2: source columns. D1/D2: calculated columns. Arithmetic only; originals stay unchanged. Select a calculated Y column to plot its values.", MessageType.Info);
+            EditorGUILayout.HelpBox("Match C1/C2 and D1/D2 to the small labels in the table headers. C: source columns; D: calculated definitions. References follow source/definition order, not displayed order. Arithmetic only; originals stay unchanged. Select a calculated Y column to plot its values.", MessageType.Info);
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (GUILayout.Button("Apply calculation"))

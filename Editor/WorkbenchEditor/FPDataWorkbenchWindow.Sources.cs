@@ -38,7 +38,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             var sheet = sheets.Find(s => s.Dataset?.DatasetId == id);
             if (sheet != null) { RememberSource(sheet.Dataset, sheet.Name); return sheet.Dataset; }
-            return admittedSources.TryGetValue(id, out var data) ? data : null;
+            if (!admittedSources.TryGetValue(id, out var data)) return null;
+            try { using var pin = data.RetainCache(); return data; }
+            catch (IOException) { admittedSources.Remove(id); return null; }
+            catch (ObjectDisposedException) { admittedSources.Remove(id); return null; }
         }
         private void OpenFigureSource(FPWorkbenchFigureDocument figure, string datasetId = null)
         {
@@ -70,11 +73,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             }
             catch (OperationCanceledException) { status = "Source verification cancelled."; }
             catch (Exception ex) { error = ex.Message; }
+            finally { if (task.Status == TaskStatus.RanToCompletion) FPWorkbenchEditorCache.ReleaseAdmission(task.Result); }
             return true;
         }
         private void CancelSourceOpening()
         {
             Cancel(sourceCancellation); sourceCancellation = null;
+            FPWorkbenchEditorCache.Abandon(sourceOpening);
             if (sourceOpeningMemory != null) sourceOpeningMemory.ReleaseAfter(sourceOpening); else Observe(sourceOpening);
             sourceOpeningMemory = null; pendingSourceOpening = null; sourceOpening = null; sourceFigure = null; openingSource = null;
         }
@@ -84,7 +89,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (existing >= 0) { active = existing; Repaint(); return; }
             if (sheets.Count >= 8) { error = "Close a sheet before reopening another source (eight open tabs maximum)."; return; }
             var data = FindSource(source.DatasetId);
-            if (data != null) { AddRegisteredSheet(data, source.Name); return; }
+            if (data != null) {
+                try { AddRegisteredSheet(data, source.Name); return; }
+                catch (IOException) { admittedSources.Remove(source.DatasetId); }
+                catch (ObjectDisposedException) { admittedSources.Remove(source.DatasetId); }
+            }
             CancelSourceOpening(); sourceCancellation = new CancellationTokenSource(); openingSource = source;
             QueueSourceOpening(source);
             status = "Verifying registered table source in background…";
@@ -94,6 +103,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (sheets.Count >= 8) { error = "Eight open sheet tabs maximum; verified source retained."; return; }
             var sheet = new Sheet { Dataset = data, Name = name, Source = data.SourcePath, Cache = data.CacheDirectory, Import = data.ImportProfile,
                 Lifetime = new CancellationTokenSource(), ColumnNames = new string[data.ColumnCount] };
+            sheet.DiskLease = FPWorkbenchEditorCache.Retain(data);
             RestoreColumns(sheet);
             for (int c = 0; c < data.ColumnCount; c++) sheet.ColumnNames[c] = (c + 1) + ": " + data.GetColumnName(c);
             sheets.Add(sheet); active = sheets.Count - 1; page = null; summary = null; failedPage = null; error = null;

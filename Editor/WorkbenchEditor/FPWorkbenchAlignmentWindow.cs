@@ -67,7 +67,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnEnable()
         {
-            windowActive = true;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
             minSize = new Vector2(760, 520); EditorApplication.update += Tick; InitializeNames();
             if (sources.Length == 0) return;
             try
@@ -87,10 +87,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnDisable()
         {
-            windowActive = false;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable);
             EditorApplication.update -= Tick; CancelOperations(); pairsMemory?.Dispose(); pairsMemory = null;
+            leftDisk?.Dispose(); leftDisk = null; rightDisk?.Dispose(); rightDisk = null;
             alignment = null; metadata = null; pairs = null; left = null; right = null;
         }
+        private IDisposable leftDisk, rightDisk;
         private void InitializeNames()
         {
             options ??= new FPWorkbenchAlignmentOptions();
@@ -100,6 +102,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private static void Observe(Task work) { if (work != null) work.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted); }
         private void CancelOperations()
         {
+            FPWorkbenchEditorCache.Abandon(admitting); FPWorkbenchEditorCache.Abandon(materializing);
             operation?.Cancel(); operation?.Dispose(); operation = null; pageCancellation?.Cancel(); pageCancellation?.Dispose(); pageCancellation = null;
             if (materializingMemory != null) materializingMemory.ReleaseAfter(materializing); else Observe(materializing);
             if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
@@ -112,6 +115,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void BeginAdmission(bool restore)
         {
+            leftDisk?.Dispose(); leftDisk = null; rightDisk?.Dispose(); rightDisk = null;
             CancelOperations(); left = null; right = null; leftNames = null; rightNames = null;
             leftSelection = Mathf.Clamp(leftSelection, 0, sources.Length - 1); rightSelection = Mathf.Clamp(rightSelection, 0, sources.Length - 1);
             operation = new CancellationTokenSource(); restoreAfterAdmission = restore; error = null;
@@ -123,16 +127,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             async Task<FPWorkbenchCsvDataset> One(FPWorkbenchSourceDocument reference)
             {
-                reference.Validate(); var data = await FPWorkbenchCsvDataset.OpenAsync(reference.CacheDirectory, token).ConfigureAwait(false);
+                reference.Validate(); var data = await FPWorkbenchEditorCache.OpenAsync(reference, token).ConfigureAwait(false);
                 var comparison = Path.DirectorySeparatorChar == '\\' ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
                 if (data.DatasetId != reference.DatasetId || !string.Equals(Path.GetFullPath(data.SourcePath), Path.GetFullPath(reference.SourcePath), comparison) || JsonUtility.ToJson(data.ImportProfile) != JsonUtility.ToJson(reference.Import))
                     throw new InvalidDataException("Registered alignment source identity/path/profile differs.");
                 return data;
             }
-            var left = await One(a).ConfigureAwait(false); var right = a.DatasetId == b.DatasetId && a.CacheDirectory == b.CacheDirectory ? left : await One(b).ConfigureAwait(false);
-            if (a.HasTypedSchema) a.TypedSchema.Compile(left);
-            if (b.HasTypedSchema) b.TypedSchema.Compile(right);
-            return new[] { left, right };
+            FPWorkbenchCsvDataset left = null, right = null; bool admitted = false;
+            try {
+                left = await One(a).ConfigureAwait(false); right = a.DatasetId == b.DatasetId && a.CacheDirectory == b.CacheDirectory ? left : await One(b).ConfigureAwait(false);
+                if (a.HasTypedSchema) a.TypedSchema.Compile(left);
+                if (b.HasTypedSchema) b.TypedSchema.Compile(right);
+                admitted = true; return new[] { left, right };
+            } finally { if (!admitted) { FPWorkbenchEditorCache.ReleaseAdmission(left); FPWorkbenchEditorCache.ReleaseAdmission(right); } }
         }
         private void BeginBuild()
         {
@@ -160,7 +167,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 materializingMemory?.Dispose(); materializingMemory = null;
                 try { var values = task.GetAwaiter().GetResult(); generatedPlot = FPWorkbenchScatterWindow.OpenAligned(workbook, values); }
                 catch (OperationCanceledException) { }
-                catch (Exception ex) { error = ex.Message; } repaint = true;
+                catch (Exception ex) { error = ex.Message; } finally { FPWorkbenchEditorCache.Abandon(task); } repaint = true;
             }
             if (admitting != null && admitting.IsCompleted)
             {
@@ -169,6 +176,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 try
                 {
                     var data = task.GetAwaiter().GetResult(); left = data[0]; right = data[1];
+                    leftDisk?.Dispose(); leftDisk = FPWorkbenchEditorCache.Retain(left);
+                    rightDisk?.Dispose(); rightDisk = FPWorkbenchEditorCache.Retain(right);
                     string[] Names(FPWorkbenchCsvDataset source) { var names = new string[source.ColumnCount]; for (int c = 0; c < names.Length; c++) names[c] = (c + 1) + ": " + source.GetColumnName(c); return names; }
                     leftNames = Names(left); rightNames = Names(right);
                     FPWorkbenchFormulaProgram Program(FPWorkbenchCsvDataset data, int selection) => sources[selection].CompileProgram(data);
@@ -187,7 +196,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     if (restoreAfterAdmission) BeginBuild();
                 }
                 catch (OperationCanceledException) { }
-                catch (Exception ex) { error = ex.Message; } repaint = true;
+                catch (Exception ex) { error = ex.Message; } finally { FPWorkbenchEditorCache.Abandon(task); } repaint = true;
             }
             if (building != null && building.IsCompleted)
             {
@@ -313,7 +322,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             try {
                 var mapping = alignment; var x = leftValueColumn; var y = rightValueColumn; var xp = leftProgram; var yp = rightProgram;
                 var policy = valueInvalidPolicy; var token = operation.Token;
-                pendingMaterializing = () => FPWorkbenchAlignedValues.BuildAsync(mapping, x, y, xp, yp, invalidPolicy: policy, cancellation: token);
+                var a = left; var b = right;
+                pendingMaterializing = () => FPWorkbenchEditorCache.HoldAlignedAsync(() => FPWorkbenchAlignedValues.BuildAsync(mapping, x, y, xp, yp, invalidPolicy: policy, cancellation: token), a, b);
                 error = null; StartPendingScans();
             }
             catch (Exception ex) { error = ex.Message; }

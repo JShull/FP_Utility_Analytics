@@ -27,13 +27,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string Root { get; }
         public long QuotaBytes { get; }
         public long ReservedBytes { get { lock (gate) return reserved; } }
+        public bool IsIdle { get { lock (gate) return operations == 0 && entries.Values.All(e => e.Pins == 0 && !e.Pending); } }
         internal sealed class OwnedFile { public string Path; public long Bytes; public byte[] Hash; }
         internal sealed class Entry
         {
             public string Id, Directory;
             public long LastUse, Reserved;
             public int Pins;
-            public bool Pending, Evicting, Committing, ReleaseRequested;
+            public bool Pending, Evicting, Committing, ReleaseRequested, Updating;
             public OwnedFile[] Files;
         }
         public sealed class TrimResult
@@ -88,12 +89,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         /// <summary>Reserves estimated payload plus bounded manifest overhead. Existing unpinned entries may be evicted.</summary>
         public Task<WriteLease> ReserveAsync(long estimatedPayloadBytes, CancellationToken cancellation = default)
         {
-            if (estimatedPayloadBytes < 0 || estimatedPayloadBytes > QuotaBytes - ManifestAllowance) throw new ArgumentOutOfRangeException(nameof(estimatedPayloadBytes));
+            if (estimatedPayloadBytes < 0) throw new ArgumentOutOfRangeException(nameof(estimatedPayloadBytes));
+            if (estimatedPayloadBytes > QuotaBytes - ManifestAllowance) throw new IOException("The estimated cache write exceeds this store's quota. Increase the quota or choose another dedicated root.");
             long bytes = checked(estimatedPayloadBytes + ManifestAllowance);
             return MutateAsync(() => {
                 var trim = TrimCore(QuotaBytes - bytes, cancellation);
                 lock (gate) {
-                    if (!trim.WithinTarget) throw new IOException("Cache quota is occupied by pinned, pending or protected entries.");
+                    if (!trim.WithinTarget) throw new IOException("Cache quota is occupied by pinned, pending or protected entries. Close unused views, finish/cancel workers, increase the quota, or choose another dedicated root. Unexpected/modified files remain protected.");
                     if (entries.Count >= MaximumEntries) throw new IOException("Cache entry capacity is full; trim unused entries before reserving another.");
                     string id = Guid.NewGuid().ToString("N");
                     var entry = new Entry { Id = id, Directory = Path.Combine(payloadRoot, id), LastUse = NextUse(), Reserved = bytes, Pending = true, Pins = 1 };
@@ -156,6 +158,90 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             if (targetBytes < 0 || targetBytes > QuotaBytes) throw new ArgumentOutOfRangeException(nameof(targetBytes));
             return MutateAsync(() => TrimCore(targetBytes, cancellation), cancellation);
+        }
+        /// <summary>Reserves additional generated files in an existing entry. Existing and unexpected files cannot be adopted or overwritten.</summary>
+        public Task<ExtensionLease> ReserveExtensionAsync(string id, long estimatedPayloadBytes, CancellationToken cancellation = default)
+        {
+            if (estimatedPayloadBytes < 0) throw new ArgumentOutOfRangeException(nameof(estimatedPayloadBytes));
+            if (estimatedPayloadBytes > QuotaBytes - ManifestAllowance) throw new IOException("The estimated additional cache write exceeds this store's quota. Increase the quota or choose another dedicated root.");
+            long bytes = checked(estimatedPayloadBytes + ManifestAllowance);
+            return MutateAsync(() => {
+                Entry entry;
+                lock (gate) {
+                    if (id == null || !entries.TryGetValue(id, out entry) || entry.Pending || entry.Evicting || entry.Updating)
+                        throw new IOException("Cache entry is unavailable for additional writes.");
+                    entry.Pins++; entry.Updating = true;
+                }
+                try {
+                    if (!Matches(entry, cancellation)) throw new InvalidDataException("Modified or unexpected cache files prevent additional writes.");
+                    var trim = TrimCore(QuotaBytes - bytes, cancellation);
+                    if (!trim.WithinTarget) throw new IOException("Cache quota is occupied by pinned, pending or protected entries. Close unused views, finish/cancel workers, increase the quota, or choose another dedicated root. Unexpected/modified files remain protected.");
+                    lock (gate) reserved = checked(reserved + bytes);
+                    return new ExtensionLease(this, entry, bytes);
+                } catch { lock (gate) { entry.Pins--; entry.Updating = false; } throw; }
+            }, cancellation);
+        }
+        public sealed class ExtensionLease : IDisposable
+        {
+            private readonly FPWorkbenchDiskCacheStore owner;
+            private readonly Entry entry;
+            private readonly long bytes;
+            private bool committing, released, finished;
+            public string DirectoryPath => entry.Directory;
+            internal ExtensionLease(FPWorkbenchDiskCacheStore owner, Entry entry, long bytes) { this.owner = owner; this.entry = entry; this.bytes = bytes; }
+            public async Task CommitAsync(IReadOnlyList<string> addedRelativeFiles, CancellationToken cancellation = default)
+            {
+                if (addedRelativeFiles == null) throw new ArgumentNullException(nameof(addedRelativeFiles));
+                var paths = addedRelativeFiles.ToArray();
+                lock (owner.gate) {
+                    if (released || committing || finished) throw new InvalidOperationException("Additional write lease is no longer available.");
+                    committing = true;
+                }
+                try {
+                    await owner.MutateAsync(() => { owner.ExtendCore(entry, paths, bytes, cancellation); return true; }, cancellation).ConfigureAwait(false);
+                } finally {
+                    lock (owner.gate) { committing = false; finished = true; Release(); }
+                }
+            }
+            private void Release()
+            {
+                if (released) return;
+                released = true; owner.reserved -= bytes; entry.Pins--; entry.Updating = false;
+            }
+            public void Dispose() { lock (owner.gate) { if (!committing) Release(); } }
+        }
+        /// <summary>Measured bytes on disk, excluding active initial writes whose full estimate is reserved.</summary>
+        public Task<long> MeasureAsync(CancellationToken cancellation = default) => MutateAsync(() => MeasureStore(cancellation), cancellation);
+
+        private void ExtendCore(Entry entry, string[] added, long reservation, CancellationToken token)
+        {
+            if (entry.Files.Length + added.Length > MaximumFiles) throw new InvalidDataException("Cache entry file capacity exceeded.");
+            var files = new List<OwnedFile>(entry.Files);
+            var expected = new HashSet<string>(entry.Files.Select(f => f.Path), Path.DirectorySeparatorChar == '\\' ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            long additional = ManifestAllowance;
+            foreach (var file in entry.Files) {
+                string path = FilePath(entry.Directory, file.Path); CheckLinks(path);
+                if (new FileInfo(path).Length != file.Bytes || !Hash(path, token).SequenceEqual(file.Hash)) throw new InvalidDataException("Existing cache content changed during additional write.");
+            }
+            // Re-read the old manifest separately: new files deliberately make Matches fail until publication.
+            var manifest = ReadManifest(entry.Directory);
+            if (manifest.Files.Length != entry.Files.Length || manifest.Files.Where((f, i) => f.Path != entry.Files[i].Path || f.Bytes != entry.Files[i].Bytes || !f.Hash.SequenceEqual(entry.Files[i].Hash)).Any())
+                throw new InvalidDataException("Cache ownership changed during additional write.");
+            foreach (string relative in added) {
+                token.ThrowIfCancellationRequested(); string path = FilePath(entry.Directory, relative);
+                if (relative == ManifestName || !expected.Add(relative)) throw new InvalidDataException("Additional files must have new, unique paths.");
+                CheckLinks(path); long length = new FileInfo(path).Length; additional = checked(additional + length);
+                files.Add(new OwnedFile { Path = relative, Bytes = length, Hash = Hash(path, token) });
+            }
+            if (additional > reservation) throw new IOException("Additional cache payload exceeded its admitted estimate.");
+            expected.Add(ManifestName);
+            foreach (string path in Walk(entry.Directory, token))
+                if (!expected.Remove(Path.GetRelativePath(entry.Directory, path).Replace(Path.DirectorySeparatorChar, '/'))) throw new InvalidDataException("Unexpected files prevent cache ownership publication.");
+            if (expected.Count != 0) throw new InvalidDataException("Declared cache files are missing.");
+            lock (gate) if (entries.Values.Where(e => !e.Pending).Sum(e => e.Files.Length) + added.Length > MaximumCatalogFiles) throw new IOException("Cache catalog file capacity is full.");
+            var replacement = new Entry { Id = entry.Id, Directory = entry.Directory, LastUse = entry.LastUse, Files = files.ToArray() };
+            WriteManifest(replacement, token);
+            lock (gate) entry.Files = replacement.Files;
         }
         /// <summary>Persists recent pin order. Call from the owning application's background lifecycle workflow.</summary>
         public Task FlushAsync(CancellationToken cancellation = default) => MutateAsync(() => {

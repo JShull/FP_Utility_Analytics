@@ -65,15 +65,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         private static async Task<FPWorkbenchAlignedValues> BuildProduct(FPWorkbenchAlignment alignment, int a, int b, FPWorkbenchFormulaProgram leftProgram,
             FPWorkbenchFormulaProgram rightProgram, FPWorkbenchAlignedValuesMetadata metadata, CancellationToken token)
         {
-            string directory = await Task.Run(() => Materialize(alignment, a, b, leftProgram, rightProgram, metadata, token), token).ConfigureAwait(false);
+            using var leftPin = alignment.LeftSource.RetainCache(); using var rightPin = alignment.RightSource.RetainCache();
+            string directory = await alignment.LeftSource.RunCachedAsync(() => Materialize(alignment, a, b, leftProgram, rightProgram, metadata, token), token).ConfigureAwait(false);
             string csv = Path.Combine(directory, "data.csv"), index = Path.Combine(alignment.LeftSource.CacheDirectory, "ai-" + metadata.Key.Substring(0, 32));
-            FPWorkbenchCsvDataset data;
-            if (Directory.Exists(index)) data = await FPWorkbenchCsvDataset.OpenAsync(index, token).ConfigureAwait(false);
-            else
-            {
-                try { data = await FPWorkbenchCsvDataset.ImportAsync(csv, index, new FPWorkbenchCsvProfile(), token).ConfigureAwait(false); }
-                catch (IOException) when (Directory.Exists(index)) { data = await FPWorkbenchCsvDataset.OpenAsync(index, token).ConfigureAwait(false); }
-            }
+            var data = await alignment.LeftSource.RunCachedAsync(() => {
+                using var publication = alignment.LeftSource.CacheBinding?.Begin(index, checked(new FileInfo(csv).Length * 8 + 16L * 1024 * 1024), token);
+                FPWorkbenchCsvDataset indexed;
+                if (Directory.Exists(index)) indexed = FPWorkbenchCsvDataset.OpenAsync(index, token).GetAwaiter().GetResult();
+                else indexed = FPWorkbenchCsvDataset.ImportAsync(csv, index, new FPWorkbenchCsvProfile(), token).GetAwaiter().GetResult();
+                publication?.Complete(new[] { "rows.fpwi", "dataset.fpwm" });
+                indexed.CacheBinding = alignment.LeftSource.CacheBinding; return indexed;
+            }, token).ConfigureAwait(false);
             var comparison = Path.DirectorySeparatorChar == '\\' ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             if (!string.Equals(Path.GetFullPath(data.SourcePath), Path.GetFullPath(csv), comparison) || JsonUtility.ToJson(data.ImportProfile) != JsonUtility.ToJson(new FPWorkbenchCsvProfile().Copy()) ||
                 data.RowCount != metadata.Alignment.MatchedPairs || data.ColumnCount != 4) throw new InvalidDataException("Aligned value index differs from its mapping.");
@@ -85,6 +87,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             var left = alignment.LeftSource; var right = alignment.RightSource;
             token.ThrowIfCancellationRequested(); left.ValidateUnchanged(); right.ValidateUnchanged(); alignment.ValidatePayload(token);
             string target = Path.Combine(left.CacheDirectory, "av-" + expected.Key.Substring(0, 32));
+            using var publication = left.CacheBinding?.Begin(target, checked(expected.Alignment.MatchedPairs * 128 + 4L * 1024 * 1024 + 256), token);
             if (Directory.Exists(target)) { ReadMetadata(target, expected, token); return target; }
             string staging = Path.Combine(left.CacheDirectory, ".av-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(staging);
             try
@@ -117,6 +120,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 File.WriteAllText(Path.Combine(staging, "seal.txt"), seal, new UTF8Encoding(false, true));
                 token.ThrowIfCancellationRequested(); left.ValidateUnchanged(); right.ValidateUnchanged();
                 try { Directory.Move(staging, target); } catch (IOException) when (Directory.Exists(target)) { ReadMetadata(target, expected, token); }
+                publication?.Complete(new[] { "data.csv", "metadata.json", "seal.txt" });
                 return target;
             }
             finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }

@@ -81,7 +81,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 (policy.LeftDateColumn < 0 || policy.LeftDateColumn >= left.ColumnCount || policy.RightDateColumn < 0 || policy.RightDateColumn >= right.ColumnCount))
                 throw new ArgumentOutOfRangeException("Choose physical UTC date columns from both sources.");
             string key = MakeKey(left, right, policy, leftChanges?.Fingerprint ?? "original", rightChanges?.Fingerprint ?? "original");
-            return Task.Run(() => Build(left, right, policy, leftChanges, rightChanges, key, cancellation), cancellation);
+            return RunPairedAsync(left, right, () => Build(left, right, policy, leftChanges, rightChanges, key, cancellation), cancellation);
+        }
+        private static async Task<T> RunPairedAsync<T>(FPWorkbenchCsvDataset left, FPWorkbenchCsvDataset right, Func<T> work, CancellationToken token)
+        {
+            using var rightPin = right.RetainCache();
+            return await left.RunCachedAsync(work, token).ConfigureAwait(false);
         }
         private static string MakeKey(FPWorkbenchCsvDataset left, FPWorkbenchCsvDataset right, FPWorkbenchAlignmentOptions policy, string leftFingerprint, string rightFingerprint)
         {
@@ -99,6 +104,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             token.ThrowIfCancellationRequested(); left.ValidateUnchanged(); right.ValidateUnchanged();
             string target = Path.Combine(left.CacheDirectory, "alignment-" + key);
+            using var publication = left.CacheBinding?.Begin(target, checked(Math.Min(left.RowCount, right.RowCount) * 16 + 4L * 1024 * 1024), token);
             if (Directory.Exists(target)) return Open(left, right, target, key, token);
             string staging = Path.Combine(left.CacheDirectory, ".alignment-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(staging);
             var metadata = new FPWorkbenchAlignmentMetadata { Key = key, Options = options, LeftDatasetId = left.DatasetId, RightDatasetId = right.DatasetId,
@@ -136,6 +142,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 File.WriteAllText(Path.Combine(staging, "metadata.json"), json, new UTF8Encoding(false, true));
                 token.ThrowIfCancellationRequested(); left.ValidateUnchanged(); right.ValidateUnchanged();
                 try { Directory.Move(staging, target); } catch (IOException) when (Directory.Exists(target)) { }
+                publication?.Complete(new[] { "matches.bin", "metadata.json" });
                 return Open(left, right, target, key, token);
             }
             finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
@@ -179,7 +186,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             if (first < 0 || first > metadata.MatchedPairs || count < 0 || count > 4096) throw new ArgumentOutOfRangeException("Alignment pages require 0–4096 pairs within the product.");
             int rows = (int)Math.Min(count, metadata.MatchedPairs - first);
-            return Task.Run(() =>
+            return RunPairedAsync(left, right, () =>
             {
                 cancellation.ThrowIfCancellationRequested(); left.ValidateUnchanged(); right.ValidateUnchanged();
                 using var reader = new BinaryReader(File.OpenRead(Path.Combine(DirectoryPath, "matches.bin"))); reader.BaseStream.Position = first * 16;

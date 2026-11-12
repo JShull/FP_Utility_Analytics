@@ -11,6 +11,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     /// <summary>Immutable source revision and disk-backed 64-bit logical-record index. No Editor dependencies.</summary>
     public sealed class FPWorkbenchCsvDataset
     {
+        internal FPWorkbenchCacheBinding CacheBinding;
+        /// <summary>Retains managed disk products for a view. Legacy, unmanaged datasets return no lease.</summary>
+        public IDisposable RetainCache() => CacheBinding?.Retain();
+        internal async Task<T> RunCachedAsync<T>(Func<T> work, CancellationToken cancellation)
+        {
+            using var pin = RetainCache();
+            return await Task.Run(work, cancellation).ConfigureAwait(false);
+        }
         private const int Magic = 0x31574246;
         private readonly FPWorkbenchCsvProfile profile;
         private readonly string[] columns;
@@ -134,7 +142,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             if (firstRow < 0 || firstRow > RowCount || rowCount < 0 || rowCount > 256 || firstColumn < 0 || columnCount < 1 || columnCount > 32 || firstColumn > ColumnCount - columnCount) throw new ArgumentOutOfRangeException("Page must fit source bounds, 256 rows and 32 columns.");
             int count = (int)Math.Min(rowCount, RowCount - firstRow);
-            return Task.Run(() =>
+            return RunCachedAsync(() =>
             {
                 cancellation.ThrowIfCancellationRequested(); ValidateSource(SourcePath, sourceBytes, modifiedTicks);
                 using var index = new BinaryReader(File.OpenRead(Path.Combine(CacheDirectory, "rows.fpwi")));

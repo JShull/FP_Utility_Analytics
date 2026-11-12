@@ -50,7 +50,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private static FPWorkbenchSheetDocument DescribeSheet(Sheet sheet)
         {
             var series = sheet.FigureLease?.Session.Series ?? sheet.Series;
-            var binding = series?.Binding ?? sheet.Binding;
+            var binding = (series?.Binding ?? sheet.Binding).Copy(sheet.Dataset.ColumnCount);
+            binding.Rows = sheet.Binding.Rows.Copy();
             return new FPWorkbenchSheetDocument
             {
                 Id = sheet.Id, Name = sheet.Name, SourcePath = sheet.Dataset.SourcePath, CacheDirectory = sheet.Cache, DatasetId = sheet.Dataset.DatasetId,
@@ -79,7 +80,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 Cancel(workbookCancel); workbookCancel = new CancellationTokenSource(); operationPath = path;
                 var token = workbookCancel.Token;
-                pendingWorkbookLoad = () => FPWorkbenchDocumentFile.LoadAsync(path, token);
+                pendingWorkbookLoad = () => FPWorkbenchEditorCache.LoadWorkbookAsync(path, token);
                 error = null; status = "Verifying workbook sources in background; current workbook retained until admission succeeds.";
                 TryStartWorkbookLoad();
             }
@@ -100,7 +101,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (workbookLoad != null && workbookLoad.IsCompleted)
             {
                 workbookLoadMemory?.Dispose(); workbookLoadMemory = null;
-                if (workbookLoad.Status == TaskStatus.RanToCompletion) { ApplyWorkbook(workbookLoad.Result); workbookPath = operationPath; }
+                if (workbookLoad.Status == TaskStatus.RanToCompletion) {
+                    using var loaded = workbookLoad.Result;
+                    try { ApplyWorkbook(loaded); workbookPath = operationPath; }
+                    catch (Exception ex) { error = ex.Message; status = "Workbook admission failed; current workbook retained."; }
+                }
                 else if (workbookLoad.IsFaulted) { error = workbookLoad.Exception.GetBaseException().Message; status = "Workbook open failed; current workbook retained."; }
                 else status = "Workbook open cancelled; current workbook retained.";
                 workbookLoad = null; changed = true;
@@ -116,6 +121,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void AbandonWorkbookLoad()
         {
+            FPWorkbenchEditorCache.Abandon(workbookLoad);
             if (workbookLoadMemory != null) workbookLoadMemory.ReleaseAfter(workbookLoad); else Observe(workbookLoad);
             workbookLoadMemory = null; workbookLoad = null; pendingWorkbookLoad = null;
         }
@@ -128,6 +134,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 var sheet = new Sheet
                 {
                     Id = saved.Id, Name = saved.Name, Source = data.SourcePath, Cache = data.CacheDirectory, Dataset = data, Import = data.ImportProfile,
+                    DiskLease = data.RetainCache(),
                     FirstRow = saved.FirstRow, FirstColumn = saved.FirstColumn, PlotColumn = saved.PlotColumn, Binding = saved.Binding,
                     Selection = saved.Selection, RangeAnchorRow = saved.Selection?.FirstRow ?? 0,
                     RangeAnchorColumn = saved.Selection?.ColumnIds[0], Plot = saved.Plot, ShowPlot = saved.ShowPlot, ShowOriginal = saved.ShowOriginal, Columns = saved.Columns, Lifetime = new CancellationTokenSource(),

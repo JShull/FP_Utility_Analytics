@@ -50,7 +50,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string FormulaFingerprint { get; private set; }
         public string CorrectionFingerprint { get; private set; }
         public long ValidCount { get; private set; }
-        public long InvalidCount => dataset.RowCount - ValidCount;
+        private FPWorkbenchRowRange rows = new FPWorkbenchRowRange();
+        public long InvalidCount => rows.Count(dataset.RowCount) - ValidCount;
         public FPWorkbenchSpatialBounds Bounds { get; private set; }
         public bool HasPoints => ValidCount != 0;
         public bool HasZ { get; private set; }
@@ -58,11 +59,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
 
         public static Task<FPWorkbenchPointCache> BuildAsync(FPWorkbenchCsvDataset dataset, int[] columns,
             FPWorkbenchFormulaProgram calculations = null, FPWorkbenchChangeSnapshot changes = null,
-            FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Reject, CancellationToken cancellation = default)
+            FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Reject, CancellationToken cancellation = default, FPWorkbenchRowRange rowRange = null)
         {
             if (dataset == null || columns == null) throw new ArgumentNullException();
             if (columns.Length != 2 && columns.Length != 3 || !Enum.IsDefined(typeof(FPWorkbenchInvalidPolicy), invalidPolicy)) throw new ArgumentException("Choose X/Y or X/Y/Z columns and an invalid-value policy.");
             if (changes != null && changes.DatasetId != dataset.DatasetId) throw new ArgumentException("Point corrections belong to another source.");
+            var rows = rowRange?.Copy() ?? new FPWorkbenchRowRange(); rows.Validate(dataset.RowCount);
             var schema = new FPWorkbenchTableView(dataset, calculations); var selected = (int[])columns.Clone(); var ids = new string[selected.Length]; bool derived = false;
             for (int c = 0; c < selected.Length; c++) { ids[c] = schema.ColumnId(selected[c]); derived |= schema.IsCalculated(selected[c]); }
             string formula = derived || calculations?.TypedSchemaFingerprint != null && calculations.TypedSchemaFingerprint != "none" ? calculations.Fingerprint : "none", correction = changes?.Fingerprint ?? "original";
@@ -71,27 +73,28 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             using (var buffer = new MemoryStream())
             {
                 using (var writer = new BinaryWriter(buffer, Encoding.UTF8, true))
-                { writer.Write(Magic); writer.Write(dataset.DatasetId); writer.Write(formula); writer.Write(correction); writer.Write((int)invalidPolicy); writer.Write(selected.Length); foreach (string id in ids) writer.Write(id); }
+                { writer.Write(Magic); writer.Write(dataset.DatasetId); writer.Write(formula); writer.Write(correction); writer.Write((int)invalidPolicy); writer.Write(selected.Length); foreach (string id in ids) writer.Write(id); if (rows.Enabled) { writer.Write("source-rows-v1"); writer.Write(rows.FirstRow); writer.Write(rows.EndRow); } }
                 using var hash = SHA256.Create(); key = Hex(hash.ComputeHash(buffer.ToArray()));
             }
-            return Task.Run(() => Build(dataset, selected, program, changes, invalidPolicy, formula, correction, key, cancellation), cancellation);
+            return dataset.RunCachedAsync(() => Build(dataset, selected, program, changes, invalidPolicy, formula, correction, key, rows, cancellation), cancellation);
         }
         private static FPWorkbenchPointCache Build(FPWorkbenchCsvDataset data, int[] columns, FPWorkbenchFormulaProgram program,
-            FPWorkbenchChangeSnapshot changes, FPWorkbenchInvalidPolicy policy, string formula, string correction, string key, CancellationToken token)
+            FPWorkbenchChangeSnapshot changes, FPWorkbenchInvalidPolicy policy, string formula, string correction, string key, FPWorkbenchRowRange rows, CancellationToken token)
         {
             token.ThrowIfCancellationRequested(); data.ValidateUnchanged();
             string target = Path.Combine(data.CacheDirectory, "spatial-" + key);
-            if (Directory.Exists(target)) return Open(data, target, key, formula, correction, columns.Length == 3, token);
+            using var publication = data.CacheBinding?.Begin(target, checked(rows.Count(data.RowCount) * 33 + 65536), token);
+            if (Directory.Exists(target)) return Open(data, target, key, formula, correction, columns.Length == 3, rows, token);
             string staging = Path.Combine(data.CacheDirectory, ".spatial-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(staging);
             try
             {
                 long count = 0, blockStart = 0; var block = new Extent(); var total = new Extent();
-                using (var source = data.OpenReaderAt(0))
+                using (var source = data.OpenReaderAt(rows.First(data.RowCount)))
                 using (var points = new BinaryWriter(File.Create(Path.Combine(staging, "points.bin"))))
                 using (var blocks = new BinaryWriter(File.Create(Path.Combine(staging, "blocks.bin"))))
                 {
                     var parser = data.Parser(source, token); var evaluator = program.CreateEvaluator(changes);
-                    for (long row = 0; row < data.RowCount; row++)
+                    for (long row = rows.First(data.RowCount); row < rows.End(data.RowCount); row++)
                     {
                         token.ThrowIfCancellationRequested(); var values = parser.Read();
                         if (values == null || values.Length != data.ColumnCount) throw new InvalidDataException("Point source differs from its index.");
@@ -116,28 +119,29 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 }
                 token.ThrowIfCancellationRequested(); data.ValidateUnchanged();
                 try { Directory.Move(staging, target); } catch (IOException) when (Directory.Exists(target)) { }
-                return Open(data, target, key, formula, correction, columns.Length == 3, token);
+                publication?.Complete(new[] { "points.bin", "blocks.bin", "metadata.bin" });
+                return Open(data, target, key, formula, correction, columns.Length == 3, rows, token);
             }
             finally { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
         }
-        private static FPWorkbenchPointCache Open(FPWorkbenchCsvDataset data, string directory, string key, string formula, string correction, bool z, CancellationToken token)
+        private static FPWorkbenchPointCache Open(FPWorkbenchCsvDataset data, string directory, string key, string formula, string correction, bool z, FPWorkbenchRowRange rows, CancellationToken token)
         {
             using var reader = new BinaryReader(File.OpenRead(Path.Combine(directory, "metadata.bin")));
             if (reader.BaseStream.Length > 1024 || reader.ReadInt32() != Magic || reader.ReadString() != key || reader.ReadString() != data.DatasetId || reader.ReadInt64() != data.RowCount)
                 throw new InvalidDataException("Invalid spatial cache metadata.");
             long count = reader.ReadInt64(); var bounds = ReadBounds(reader); string pointsHash = reader.ReadString(), blocksHash = reader.ReadString();
-            if (count < 0 || count > data.RowCount || count > long.MaxValue / PointBytes || reader.BaseStream.Position != reader.BaseStream.Length ||
+            if (count < 0 || count > rows.Count(data.RowCount) || count > long.MaxValue / PointBytes || reader.BaseStream.Position != reader.BaseStream.Length ||
                 new FileInfo(Path.Combine(directory, "points.bin")).Length != count * PointBytes ||
                 new FileInfo(Path.Combine(directory, "blocks.bin")).Length != (count / BlockPoints + (count % BlockPoints == 0 ? 0 : 1)) * BlockBytes ||
                 Hash(Path.Combine(directory, "points.bin"), token) != pointsHash || Hash(Path.Combine(directory, "blocks.bin"), token) != blocksHash)
                 throw new InvalidDataException("Spatial cache payload failed verification.");
             data.ValidateUnchanged();
-            return new FPWorkbenchPointCache(data) { DirectoryPath = directory, FormulaFingerprint = formula, CorrectionFingerprint = correction, HasZ = z, ValidCount = count, Bounds = bounds };
+            return new FPWorkbenchPointCache(data) { DirectoryPath = directory, FormulaFingerprint = formula, CorrectionFingerprint = correction, HasZ = z, ValidCount = count, Bounds = bounds, rows = rows.Copy() };
         }
         public Task<FPWorkbenchPointView> QueryAsync(FPWorkbenchSpatialBounds bounds, int maximumPoints = 10000, CancellationToken cancellation = default)
         {
             if (maximumPoints < 1 || maximumPoints > 65536) throw new ArgumentOutOfRangeException(nameof(maximumPoints));
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 dataset.ValidateUnchanged(); var heap = new Samples(maximumPoints); long matches = 0, records = 0, blockCount = 0;
                 using var blocks = new BinaryReader(File.OpenRead(Path.Combine(DirectoryPath, "blocks.bin")));

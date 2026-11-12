@@ -42,6 +42,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OpenSavedFigure(FPWorkbenchFigureDocument figure)
         {
+            var sourceSheet = sheets.Find(s => s.Id == figure.SourceSheetId && s.Dataset?.DatasetId == figure.DatasetId);
+            if (sourceSheet != null) {
+                figure.Rows = sourceSheet.Binding.Rows.Copy(); figure.Binding.Rows = figure.Rows.Copy();
+                if (figure.Kind == FPWorkbenchFigureKind.Histogram) { figure.FirstRow = figure.Rows.First(sourceSheet.Dataset.RowCount); figure.EndRow = figure.Rows.End(sourceSheet.Dataset.RowCount); }
+            }
             foreach (var window in Resources.FindObjectsOfTypeAll<FPWorkbenchHistogramWindow>())
                 if (window.WorkbookId == workbookId && window.FigureId == figure.Id) { window.Focus(); return; }
             foreach (var window in Resources.FindObjectsOfTypeAll<FPWorkbenchOverlayWindow>())

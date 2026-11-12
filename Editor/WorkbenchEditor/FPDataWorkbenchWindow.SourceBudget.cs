@@ -23,6 +23,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             ClearImportPreview(sheet);
             Cancel(sheet.Lifetime); sheet.Lifetime = null;
+            FPWorkbenchEditorCache.Abandon(sheet.Loading);
+            sheet.DiskLease?.Dispose(); sheet.DiskLease = null;
             if (sheet.LoadMemory != null) sheet.LoadMemory.ReleaseAfter(sheet.Loading); else Observe(sheet.Loading);
             sheet.LoadMemory = null; sheet.PendingLoading = null; sheet.Loading = null; sheet.WaitingForLoad = false;
         }
@@ -30,7 +32,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             var cache = source.CacheDirectory; var token = sourceCancellation.Token;
             sourceOpeningBytes = FPWorkbenchEditorResources.ProfileBytes(source.Import, 8L * 1024 * 1024);
-            pendingSourceOpening = () => FPWorkbenchCsvDataset.OpenAsync(cache, token); TryStartSourceOpening();
+            pendingSourceOpening = () => FPWorkbenchEditorCache.OpenAsync(source, token); TryStartSourceOpening();
         }
         private void TryStartSourceOpening()
         {

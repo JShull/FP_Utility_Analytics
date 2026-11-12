@@ -16,7 +16,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private readonly List<int> indices = new List<int>();
         private Mesh mesh;
         private Material material;
+        private Mesh imageMesh;
+        private Material imageMaterial;
         private int labels;
+        public void Image(Texture2D source, Rect rect)
+        {
+            if (source == null || imageMesh != null) throw new ArgumentException("An image canvas accepts one source texture.");
+            var shader = Shader.Find("Unlit/Texture"); if (shader == null) throw new InvalidOperationException("Image composition shader is unavailable.");
+            imageMaterial = new Material(shader) { hideFlags = HideFlags.HideAndDontSave, mainTexture = source };
+            imageMesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+            imageMesh.vertices = new[] { new Vector3(rect.x, rect.y, 1), new Vector3(rect.xMax, rect.y, 1), new Vector3(rect.xMax, rect.yMax, 1), new Vector3(rect.x, rect.yMax, 1) };
+            imageMesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            imageMesh.triangles = new[] { 0, 2, 1, 0, 3, 2 }; imageMesh.RecalculateBounds();
+            var go = new GameObject("Workbench image layer") { hideFlags = HideFlags.HideAndDontSave };
+            go.AddComponent<MeshFilter>().sharedMesh = imageMesh; go.AddComponent<MeshRenderer>().sharedMaterial = imageMaterial; preview.AddSingleGO(go);
+        }
         public void Quad(float x, float y, float width, float height, Color color)
         {
             if (vertices.Count > 1048572) throw new InvalidOperationException("Image geometry exceeds its vertex budget.");
@@ -61,6 +75,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             camera.clearFlags = CameraClearFlags.Color; camera.backgroundColor = new Color(.1f, .1f, .1f);
             preview.DrawMesh(mesh, Matrix4x4.identity, material, 0); preview.Render(true); return preview.EndStaticPreview();
         }
-        public void Dispose() { preview.Cleanup(); if (mesh != null) UnityEngine.Object.DestroyImmediate(mesh); if (material != null) UnityEngine.Object.DestroyImmediate(material); }
+        public void Dispose()
+        {
+            preview.Cleanup(); if (mesh != null) UnityEngine.Object.DestroyImmediate(mesh); if (material != null) UnityEngine.Object.DestroyImmediate(material);
+            if (imageMesh != null) UnityEngine.Object.DestroyImmediate(imageMesh); if (imageMaterial != null) UnityEngine.Object.DestroyImmediate(imageMaterial);
+        }
     }
 }

@@ -33,7 +33,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             if (dataset == null) throw new ArgumentNullException(nameof(dataset));
             if (column < 0 || column >= dataset.ColumnCount || firstRow < 0 || endRow <= firstRow || endRow > dataset.RowCount || binCount < 1 || binCount > 4096) throw new ArgumentOutOfRangeException();
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 var summary = new FPWorkbenchPlotSummary { DatasetId = dataset.DatasetId, Column = column, FirstRow = firstRow, EndRow = endRow, Bins = new FPWorkbenchPlotBin[binCount] };
                 using var source = dataset.OpenReader(); dataset.SkipHeader(source, cancellation);

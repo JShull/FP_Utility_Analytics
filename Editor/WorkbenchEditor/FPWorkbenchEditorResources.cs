@@ -27,7 +27,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (worker != null) return true;
             var bounds = profile ?? new FPWorkbenchCsvProfile { MaximumRecordBytes = 16 * 1024 * 1024, MaximumColumns = 4096 };
             if (!TryAcquireScan(ProfileBytes(bounds, 8L * 1024 * 1024), out reservation)) return false;
-            try { worker = FPWorkbenchCsvDataset.OpenAsync(cache, token); return true; }
+            try { worker = FPWorkbenchEditorCache.OpenAsync(cache, token); return true; }
             catch { reservation.Dispose(); reservation = null; throw; }
         }
         internal static bool TryAcquireScan(long bytes, out ScanReservation reservation)

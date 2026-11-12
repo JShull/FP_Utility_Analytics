@@ -11,6 +11,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     public sealed class FPWorkbenchSeriesBinding
     {
         public FPWorkbenchXMode XMode;
+        public FPWorkbenchRowRange Rows = new FPWorkbenchRowRange();
         public int XColumn, YColumn, DateColumn;
         public string YDerivedId = "";
         public string XDerivedId = "";
@@ -27,7 +28,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 double.IsNaN(MaximumGap) || double.IsInfinity(MaximumGap) || MaximumGap < 0)
                 throw new ArgumentException("Invalid series columns, UTC format or gap bound.");
             if (XMode == FPWorkbenchXMode.UtcDateTime) FPWorkbenchUtcTimestamp.ValidateFormat(UtcFormat);
-            return (FPWorkbenchSeriesBinding)MemberwiseClone();
+            Rows ??= new FPWorkbenchRowRange(); Rows.Validate();
+            var copy = (FPWorkbenchSeriesBinding)MemberwiseClone(); copy.Rows = Rows.Copy(); return copy;
         }
         public int ResolveDerivedY(FPWorkbenchFormulaProgram calculations)
         {
@@ -43,7 +45,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             for (int i = 0; i < calculations.ColumnCount; i++) if (calculations.ColumnId(i) == XDerivedId) return i;
             throw new ArgumentException("Calculated X reference was removed or belongs to another definition set.");
         }
-        internal double ReadX(string[] row, long index, ref long originTicks)
+        internal double ReadX(string[] row, long index, ref long originTicks, bool initializeOrigin = false)
         {
             if (XMode == FPWorkbenchXMode.Row) return index;
             if (XMode == FPWorkbenchXMode.Numeric)
@@ -54,7 +56,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             }
             if (!FPWorkbenchUtcTimestamp.TryRead(row[DateColumn], row[XColumn], UtcFormat, out long ticks))
                 throw new InvalidDataException("UTC date/time does not match the declared format at logical row " + index + ".");
-            if (index == 0) originTicks = ticks;
+            if (index == 0 || initializeOrigin) originTicks = ticks;
             return (ticks - originTicks) / (double)TimeSpan.TicksPerSecond;
         }
         internal static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);

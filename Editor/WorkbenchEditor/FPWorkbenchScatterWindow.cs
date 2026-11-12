@@ -43,6 +43,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private Color pointColor = new Color(0, .7f, 1);
         [SerializeField] private bool showSettings;
         private FPWorkbenchCsvDataset dataset;
+        private IDisposable diskLease, originLeftDisk, originRightDisk;
         private FPWorkbenchFormulaProgram program;
         private FPWorkbenchChangeSnapshot changes;
         private string[] names;
@@ -67,15 +68,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private bool fitAfterBuild, failedQuery, selected;
         private FPWorkbenchSpatialPoint selection;
         private string error;
+        [SerializeField] private string sourceSheetId = "";
+        [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
         private bool Busy => opening != null || pendingOpening || building != null || pendingBuild != null || querying != null || regenerating != null || pendingRegenerating != null || waitingForMemory;
         public static FPWorkbenchScatterWindow Open(string workbook, FPWorkbenchCsvDataset source, int x, int y,
-            FPWorkbenchFormulaProgram formulas = null, FPWorkbenchChangeSnapshot edits = null, FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Reject)
+            FPWorkbenchFormulaProgram formulas = null, FPWorkbenchChangeSnapshot edits = null, FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Reject, FPWorkbenchRowRange rows = null, string sheetId = "")
         {
             var schema = new FPWorkbenchTableView(source, formulas); schema.ColumnId(x); schema.ColumnId(y);
             if (edits != null && edits.DatasetId != source.DatasetId) throw new ArgumentException("Scatter corrections belong to another source.");
             var window = CreateInstance<FPWorkbenchScatterWindow>(); window.workbookId = workbook; window.cacheDirectory = source.CacheDirectory;
             window.datasetId = source.DatasetId; window.invalidPolicy = invalidPolicy; window.xColumn = x; window.yColumn = y;
             window.calculations = formulas == null ? null : JsonUtility.ToJson(formulas.Definition); window.corrections = edits?.Json;
+            window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange(); window.rowRange.Validate(source.RowCount); window.sourceSheetId = sheetId;
             window.Attach(source); window.BeginBuild(true); FPDataWorkbenchWindow.RememberFigure(workbook, window.DescribeFigure()); window.titleContent = new GUIContent("Scatter Figure"); window.Show(); return window;
         }
         internal static FPWorkbenchScatterWindow OpenAligned(string owner, FPWorkbenchAlignedValues values)
@@ -113,7 +117,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 XDerivedId = x < dataset.ColumnCount ? "" : program.ColumnId(x - dataset.ColumnCount),
                 YDerivedId = y < dataset.ColumnCount ? "" : program.ColumnId(y - dataset.ColumnCount) };
             var result = new FPWorkbenchFigureDocument { Id = figureId, Name = string.IsNullOrEmpty(settings.Title) ? "Scatter figure" : settings.Title,
-                DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Scatter, Binding = binding, Plot = settings, PointBudget = maximumPoints,
+                DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Scatter, Rows = rowRange.Copy(), SourceSheetId = sourceSheetId, Binding = binding, Plot = settings, PointBudget = maximumPoints,
                 Colors = new[] { pointColor }, InvalidPolicy = cache == null ? invalidPolicy : appliedPolicy,
                 HasCalculationSnapshot = !string.IsNullOrEmpty(calculations), CalculationSnapshot = program?.Definition,
                 HasCorrectionSnapshot = changes != null, CorrectionSnapshot = changes == null ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(changes.Json) };
@@ -133,6 +137,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             window.corrections = figure.HasCorrectionSnapshot ? JsonUtility.ToJson(figure.CorrectionSnapshot) : null;
             window.settings = JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(figure.Plot));
             window.maximumPoints = figure.PointBudget; window.pointColor = figure.Colors[0]; window.invalidPolicy = figure.InvalidPolicy;
+            window.rowRange = figure.Rows.Copy(); window.sourceSheetId = figure.SourceSheetId;
             window.Attach(source); window.DescribeFigure(); window.BeginBuild(!window.settings.HasRange); window.titleContent = new GUIContent(figure.Name); window.Show(); return window;
         }
         internal static FPWorkbenchScatterWindow OpenSavedAligned(string owner, FPWorkbenchCsvDataset left, FPWorkbenchCsvDataset right, FPWorkbenchFigureDocument figure)
@@ -145,21 +150,20 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             window.settings = JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(figure.Plot)); window.maximumPoints = figure.PointBudget; window.pointColor = figure.Colors[0]; window.invalidPolicy = figure.InvalidPolicy;
             window.DescribeFigure();
             var recipe = window.alignedRecipe; var token = window.lifetime.Token;
-            window.BeginRegeneration(() => recipe.BuildAsync(left, right, token), left.ImportProfile, right.ImportProfile);
+            // Retain originals while a regeneration request waits for background capacity.
+            window.originLeftDisk = left.RetainCache(); window.originRightDisk = right.RetainCache();
+            window.BeginRegeneration(() => FPWorkbenchEditorCache.HoldAlignedAsync(() => recipe.BuildAsync(left, right, token), left, right), left.ImportProfile, right.ImportProfile);
             window.titleContent = new GUIContent(figure.Name); window.Show(); return window;
         }
         private static FPWorkbenchSourceDocument Describe(FPWorkbenchCsvDataset source) => new FPWorkbenchSourceDocument { DatasetId = source.DatasetId, SourcePath = source.SourcePath, CacheDirectory = source.CacheDirectory, Import = source.ImportProfile, Name = System.IO.Path.GetFileNameWithoutExtension(source.SourcePath) };
         private static async Task<FPWorkbenchAlignedValues> Regenerate(FPWorkbenchAlignedFigureRecipe recipe, FPWorkbenchSourceDocument left, FPWorkbenchSourceDocument right, CancellationToken token)
         {
-            async Task<FPWorkbenchCsvDataset> Admit(FPWorkbenchSourceDocument reference)
-            {
-                reference.Validate(); var data = await FPWorkbenchCsvDataset.OpenAsync(reference.CacheDirectory, token).ConfigureAwait(false);
-                var comparison = System.IO.Path.DirectorySeparatorChar == '\\' ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-                if (data.DatasetId != reference.DatasetId || !string.Equals(System.IO.Path.GetFullPath(data.SourcePath), System.IO.Path.GetFullPath(reference.SourcePath), comparison) || JsonUtility.ToJson(data.ImportProfile) != JsonUtility.ToJson(reference.Import)) throw new InvalidOperationException("Aligned original source identity/path/profile differs.");
-                return data;
-            }
-            var a = await Admit(left).ConfigureAwait(false); var b = await Admit(right).ConfigureAwait(false);
-            return await recipe.BuildAsync(a, b, token).ConfigureAwait(false);
+            FPWorkbenchCsvDataset a = null, b = null;
+            try {
+                a = await FPWorkbenchEditorCache.OpenAsync(left, token).ConfigureAwait(false);
+                b = await FPWorkbenchEditorCache.OpenAsync(right, token).ConfigureAwait(false);
+                return await FPWorkbenchEditorCache.HoldAlignedAsync(() => recipe.BuildAsync(a, b, token), a, b).ConfigureAwait(false);
+            } finally { FPWorkbenchEditorCache.ReleaseAdmission(a); FPWorkbenchEditorCache.ReleaseAdmission(b); }
         }
         private void BeginRegeneration(Func<Task<FPWorkbenchAlignedValues>> request, FPWorkbenchCsvProfile a, FPWorkbenchCsvProfile b)
         {
@@ -181,9 +185,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 Matched = m.Alignment.MatchedPairs, UnmatchedLeft = m.Alignment.UnmatchedLeftRows, UnmatchedRight = m.Alignment.UnmatchedRightRows, AmbiguousLeft = m.Alignment.AmbiguousLeftRows, AmbiguousRight = m.Alignment.AmbiguousRightRows };
             Attach(values.Dataset); BeginBuild(!settings.HasRange);
         }
+        internal void ApplySheetRows(FPWorkbenchFigureDocument figure)
+        {
+            rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId; settings.HasRange = false;
+            lastFigureMetadata = JsonUtility.ToJson(figure); selected = false;
+            if (dataset == null) return;
+            lifetime.Cancel(); lifetime.Dispose(); lifetime = new CancellationTokenSource();
+            queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null;
+            if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
+            buildMemory = null; building = null; pendingBuild = null;
+            if (queryMemory != null) queryMemory.ReleaseAfter(querying); else Observe(querying);
+            queryMemory = null; querying = null; ClearView(); waitingForMemory = false;
+            cache = null; BeginBuild(true); Repaint();
+        }
         private void OnEnable()
         {
-            windowActive = true;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
             minSize = new Vector2(560, 420); wantsMouseMove = true; lifetime = new CancellationTokenSource(); EditorApplication.update += Tick;
             if (!hasAlignedRecipe) { alignedRecipe = null; alignedLeftReference = null; alignedRightReference = null; }
             else
@@ -204,7 +221,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnDisable()
         {
-            windowActive = false;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); diskLease?.Dispose(); diskLease = null;
+            originLeftDisk?.Dispose(); originLeftDisk = null; originRightDisk?.Dispose(); originRightDisk = null;
+            FPWorkbenchEditorCache.Abandon(regenerating);
             imageJob?.Dispose(); imageJob = null;
             try { if (dataset != null || hasAlignedRecipe) FPDataWorkbenchWindow.RememberFigure(workbookId, DescribeFigure()); }
             catch (Exception ex) { error = "Figure settings not retained: " + ex.Message; }
@@ -220,7 +239,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
             buildMemory = null; pendingBuild = null;
             if (queryMemory != null) queryMemory.ReleaseAfter(querying); else Observe(querying);
-            queryMemory = null; opening = null; building = null; querying = null;
+            queryMemory = null; FPWorkbenchEditorCache.Abandon(opening); opening = null; building = null; querying = null;
             dataset = null; cache = null; ClearView(); waitingForMemory = false;
         }
         private static void Observe(Task task) { if (task != null) task.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted); }
@@ -233,7 +252,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (changes != null && changes.DatasetId != datasetId) throw new InvalidOperationException("Scatter correction source changed.");
             var schema = new FPWorkbenchTableView(source, program); schema.ColumnId(xColumn); schema.ColumnId(yColumn);
             names = new string[schema.ColumnCount]; for (int c = 0; c < names.Length; c++) names[c] = (c >= source.ColumnCount ? "ƒ " : "") + schema.ColumnName(c);
-            dataset = source;
+            var pin = FPWorkbenchEditorCache.Retain(source); diskLease?.Dispose(); diskLease = pin; dataset = source;
         }
         private void BeginBuild(bool fit)
         {
@@ -246,7 +265,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 buildX = xColumn; buildY = yColumn; buildPolicy = invalidPolicy; fitAfterBuild = fit; error = null;
                 var source = dataset; var columns = new[] { buildX, buildY }; var formulas = program; var edits = changes;
                 var policy = invalidPolicy; var token = lifetime.Token;
-                pendingBuild = () => FPWorkbenchPointCache.BuildAsync(source, columns, formulas, edits, policy, token);
+                pendingBuild = () => FPWorkbenchPointCache.BuildAsync(source, columns, formulas, edits, policy, token, rowRange.Copy());
                 waitingForMemory = !FPWorkbenchEditorResources.TryStartSource(dataset, ref pendingBuild, ref building, ref buildMemory);
             }
             catch (Exception ex) { error = ex.Message; }
@@ -290,6 +309,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 var work = regenerating; regenerating = null;
                 regenerationMemory?.Dispose(); regenerationMemory = null;
                 try { AttachRegenerated(work.GetAwaiter().GetResult()); } catch (Exception ex) { error = ex.Message; } repaint = true;
+                FPWorkbenchEditorCache.Abandon(work);
             }
             if (revealing != null && revealing.IsCompleted)
             {
@@ -307,7 +327,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 var work = opening; opening = null;
                 openingMemory?.Dispose(); openingMemory = null;
-                try { Attach(work.GetAwaiter().GetResult()); BeginBuild(!settings.HasRange); } catch (Exception ex) { error = ex.Message; } repaint = true;
+                try { Attach(work.GetAwaiter().GetResult()); BeginBuild(!settings.HasRange); } catch (Exception ex) { error = ex.Message; } finally { FPWorkbenchEditorCache.Abandon(work); } repaint = true;
             }
             if (building != null && building.IsCompleted)
             {
@@ -355,6 +375,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void ClearView() { view = null; viewMemory?.Dispose(); viewMemory = null; }
         private void OnGUI()
         {
+            if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
             if (dataset == null) { EditorGUILayout.HelpBox(error ?? (waitingForMemory ? "Waiting for shared memory/background capacity…" : "Verifying scatter source…"), MessageType.Info); return; }
             using (new EditorGUI.DisabledScope(building != null || pendingBuild != null || opening != null || hasAlignedRecipe))
             using (new EditorGUILayout.HorizontalScope())

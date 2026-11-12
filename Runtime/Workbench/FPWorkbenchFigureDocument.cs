@@ -13,13 +13,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public int ZColumn;
         public string ZDerivedId = "";
         public bool Clip, Orthographic, InvertOrbit;
+        public bool ShowOrigin = true, ShowXAxis = true, ShowYAxis = true, ShowZAxis = true, ShowAxisValues = true;
         public double MinimumX, MaximumX = 1, MinimumY, MaximumY = 1, MinimumZ, MaximumZ = 1;
         public Quaternion Orbit = Quaternion.Euler(25, -35, 0);
         public Vector3 Pan;
-        public float Zoom = 1.4f, PointSize = 4;
+        public float Zoom = 1.4f, PointSize = 4, NearClip = .001f;
         internal void Validate()
         {
-            if (ZColumn < 0 || ZDerivedId != null && ZDerivedId.Length > 128 || !Finite(Zoom) || Zoom < .05 || Zoom > 40 || !Finite(PointSize) || PointSize < 1 || PointSize > 32 ||
+            if (!Finite(NearClip) || NearClip < .00001f || NearClip > 1 || ZColumn < 0 || ZDerivedId != null && ZDerivedId.Length > 128 || !Finite(Zoom) || Zoom < .05 || Zoom > 40 || !Finite(PointSize) || PointSize < 1 || PointSize > 32 ||
                 !Finite(Pan.x) || !Finite(Pan.y) || !Finite(Pan.z) || Math.Abs(Pan.x) > 1e6 || Math.Abs(Pan.y) > 1e6 || Math.Abs(Pan.z) > 1e6)
                 throw new InvalidDataException("Invalid 3D axis, camera pan/zoom or point size.");
             double norm = (double)Orbit.x * Orbit.x + (double)Orbit.y * Orbit.y + (double)Orbit.z * Orbit.z + (double)Orbit.w * Orbit.w;
@@ -37,6 +38,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public int Version = 1;
         public string Id = Guid.NewGuid().ToString("N"), Name = "Figure", DatasetId;
         public FPWorkbenchFigureKind Kind;
+        public string SourceSheetId = "";
+        public FPWorkbenchRowRange Rows = new FPWorkbenchRowRange();
         public bool HasCorrectionSnapshot;
         public FPWorkbenchChangeSet CorrectionSnapshot;
         public bool HasCalculationSnapshot;
@@ -59,6 +62,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
 
         public void Validate()
         {
+            Rows ??= new FPWorkbenchRowRange(); Rows.Validate();
+            if (SourceSheetId != null && SourceSheetId.Length > 128) throw new InvalidDataException("Invalid figure source sheet.");
             if (Version != 1 || string.IsNullOrEmpty(Id) || Id.Length > 128 || string.IsNullOrEmpty(Name) || Name.Length > 512 ||
                 string.IsNullOrEmpty(DatasetId) || DatasetId.Length > 256 || !Enum.IsDefined(typeof(FPWorkbenchFigureKind), Kind))
                 throw new InvalidDataException("Invalid figure version, kind or identity.");
@@ -135,6 +140,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         internal void ValidateSource(FPWorkbenchCsvDataset source, FPWorkbenchCsvDataset secondary = null)
         {
             Validate();
+            Rows.Validate(source.RowCount);
+            if (Binding != null) (Binding.Rows ?? new FPWorkbenchRowRange()).Validate(source.RowCount);
             if (source.DatasetId != DatasetId) throw new InvalidDataException("Figure source revision differs.");
             FPWorkbenchFormulaProgram calculations = null;
             if (HasCalculationSnapshot)

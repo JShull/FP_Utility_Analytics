@@ -54,7 +54,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             for (int i = 1; i < bins; i++) edges[i] = minimum + (i / (double)bins) * (maximum - minimum);
             for (int i = 1; i <= bins; i++) if (edges[i] <= edges[i - 1]) throw new ArgumentException("Histogram bin edges collapse at double precision; reduce bin count or change limits.");
             var evaluator = program.CreateEvaluator(changes);
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 cancellation.ThrowIfCancellationRequested(); var counts = new long[bins];
                 var result = new FPWorkbenchHistogramResult { DatasetId = dataset.DatasetId, FormulaFingerprint = program.Fingerprint,

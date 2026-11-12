@@ -54,7 +54,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     var sheet = sheets.Find(s => s.Id == state.SheetId && s.Dataset?.DatasetId == state.DatasetId);
                     if (sheet == null) continue;
                     var payload = JsonUtility.FromJson<PlotBindingPayload>(state.Json);
-                    sheet.Binding = payload.Binding.Copy(sheet.Dataset.ColumnCount); sheet.PlotColumn = payload.Column;
+                    bool rowChange = JsonUtility.ToJson(sheet.Binding.Rows) != JsonUtility.ToJson(payload.Binding.Rows);
+                    sheet.Binding = payload.Binding.Copy(sheet.Dataset.ColumnCount);
+                    if (rowChange) { sheet.RowRangeDraftFirst = sheet.Binding.Rows.First(sheet.Dataset.RowCount) + 1; sheet.RowRangeDraftEnd = sheet.Binding.Rows.End(sheet.Dataset.RowCount); ApplyInheritedFigureRows(sheet); } sheet.PlotColumn = payload.Column;
                     EnsureTableSchema(sheet);
                     if (sheet.Binding.HasDerivedY) sheet.PlotColumn = PlotColumnForBinding(sheet, sheet.Binding);
                     summary = null;

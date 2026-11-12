@@ -22,6 +22,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private bool density, grid = true, fitOnOpen = true;
         [SerializeField] private FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Skip;
         private FPWorkbenchCsvDataset dataset;
+        private IDisposable diskLease;
         private FPWorkbenchFormulaProgram program;
         private FPWorkbenchChangeSnapshot snapshot;
         private Task<FPWorkbenchCsvDataset> opening;
@@ -36,8 +37,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private CancellationTokenSource cancellation;
         private string error;
         private GUIContent equationLabel;
+        [SerializeField] private string sourceSheetId = "";
+        [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
         private bool Busy => opening != null || pendingOpening || fitting != null || building != null || pendingFit || pendingBuild;
-        public static FPWorkbenchHistogramWindow Open(FPWorkbenchCsvDataset source, int sourceColumn, FPWorkbenchChangeSnapshot changes = null, string workbookId = null, FPWorkbenchFormulaProgram calculationProgram = null, string derivedColumnId = null)
+        public static FPWorkbenchHistogramWindow Open(FPWorkbenchCsvDataset source, int sourceColumn, FPWorkbenchChangeSnapshot changes = null, string workbookId = null, FPWorkbenchFormulaProgram calculationProgram = null, string derivedColumnId = null, FPWorkbenchRowRange rows = null, string sheetId = "")
         {
             bool derived = !string.IsNullOrEmpty(derivedColumnId);
             if (source == null || !derived && (sourceColumn < 0 || sourceColumn >= source.ColumnCount) || changes != null && changes.DatasetId != source.DatasetId ||
@@ -46,21 +49,30 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var window = CreateInstance<FPWorkbenchHistogramWindow>(); window.cache = source.CacheDirectory; window.datasetId = source.DatasetId;
             window.column = selected; window.columnName = derived ? calculationProgram.Name(selected) : source.GetColumnName(selected); window.endRow = source.RowCount;
             window.derivedId = derivedColumnId; window.calculations = calculationProgram == null ? null : JsonUtility.ToJson(calculationProgram.Definition);
-            window.workbook = workbookId;
+            window.workbook = workbookId; window.sourceSheetId = sheetId; window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange();
+            window.firstRow = window.rowRange.First(source.RowCount); window.endRow = window.rowRange.End(source.RowCount);
             window.corrections = changes?.Json; window.Attach(source); window.BeginFit();
             FPDataWorkbenchWindow.RememberFigure(workbookId, window.DescribeFigure());
             window.titleContent = new GUIContent(window.columnName + " — Histogram"); window.Show(); return window;
         }
+        internal void ApplySheetRows(FPWorkbenchFigureDocument figure)
+        {
+            rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId;
+            if (dataset != null) { cancellation.Cancel(); ReleaseHistogramOperation(); }
+            resultMemory?.Dispose(); resultMemory = null; result = null; publishedSettings = null; DisposeHistogramUndo();
+            firstRow = figure.FirstRow; endRow = figure.EndRow; fitOnOpen = true; error = null;
+            if (dataset != null) BeginFit(); Repaint();
+        }
         private void OnEnable()
         {
-            windowActive = true;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
             minSize = new Vector2(560, 360); wantsMouseMove = true; cancellation = new CancellationTokenSource(); EditorApplication.update += Tick;
             try { RestorePublishedQuery(); } catch (Exception ex) { error = ex.Message; return; }
             pendingOpening = !string.IsNullOrEmpty(cache);
         }
         private void OnDisable()
         {
-            windowActive = false;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); diskLease?.Dispose(); diskLease = null;
             imageJob?.Dispose(); imageJob = null;
             DisposeHistogramUndo();
             try { if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure()); }
@@ -68,7 +80,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             EditorApplication.update -= Tick; cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
             if (openingMemory != null) openingMemory.ReleaseAfter(opening); else Observe(opening);
             openingMemory = null; pendingOpening = false; ReleaseHistogramOperation();
-            resultMemory?.Dispose(); resultMemory = null; opening = null;
+            resultMemory?.Dispose(); resultMemory = null; FPWorkbenchEditorCache.Abandon(opening); opening = null;
             dataset = null; program = null; snapshot = null; result = null;
         }
         internal FPWorkbenchFigureDocument DescribeFigure()
@@ -76,7 +88,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var shown = PublishedHistogramSettings() ?? CaptureHistogramSettings();
             return new FPWorkbenchFigureDocument
         {
-            Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram,
+            Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram, SourceSheetId = sourceSheetId, Rows = rowRange.Copy(),
             HistogramColumn = string.IsNullOrEmpty(derivedId) ? column : 0, HistogramDerivedId = derivedId, HistogramBins = shown.Bins, FirstRow = shown.FirstRow, EndRow = shown.EndRow, Minimum = shown.Minimum, Maximum = shown.Maximum,
             Density = density, Grid = grid, FitHistogramOnOpen = shown.FitOnOpen, InvalidPolicy = shown.InvalidPolicy,
             HasCorrectionSnapshot = !string.IsNullOrEmpty(corrections),
@@ -89,6 +101,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             saved.Validate(); var window = CreateInstance<FPWorkbenchHistogramWindow>();
             window.workbook = workbookId; window.figureId = saved.Id; window.cache = source.CacheDirectory; window.datasetId = saved.DatasetId;
+            window.rowRange = saved.Rows.Copy(); window.sourceSheetId = saved.SourceSheetId;
             window.column = saved.HistogramColumn; window.bins = saved.HistogramBins; window.derivedId = saved.HistogramDerivedId;
             window.calculations = saved.HasCalculationSnapshot ? JsonUtility.ToJson(saved.CalculationSnapshot) : null;
             window.firstRow = saved.FirstRow; window.endRow = saved.EndRow; window.minimum = saved.Minimum; window.maximum = saved.Maximum;
@@ -102,7 +115,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             if (source.DatasetId != datasetId) throw new InvalidOperationException("Histogram source revision changed.");
             sourceProfile = source.ImportProfile;
-            dataset = source; program = FPWorkbenchFormulaProgram.Compile(source, string.IsNullOrEmpty(calculations) ? new FPWorkbenchFormulaSet { DatasetId = datasetId } : JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations));
+            var pin = FPWorkbenchEditorCache.Retain(source); diskLease?.Dispose(); diskLease = pin; dataset = source; program = FPWorkbenchFormulaProgram.Compile(source, string.IsNullOrEmpty(calculations) ? new FPWorkbenchFormulaSet { DatasetId = datasetId } : JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations));
             if (!string.IsNullOrEmpty(derivedId)) column = new FPWorkbenchSeriesBinding { YDerivedId = derivedId }.ResolveDerivedY(program);
             else if (column < 0 || column >= source.ColumnCount) throw new InvalidOperationException("Histogram source column changed.");
             equationLabel = string.IsNullOrEmpty(derivedId) ? null : new GUIContent("Formula snapshot: " + program.Expression(column), program.Expression(column));
@@ -138,7 +151,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 var task = opening; opening = null;
                 openingMemory?.Dispose(); openingMemory = null;
                 try { Attach(task.GetAwaiter().GetResult()); if (fitOnOpen) BeginFit(); else BeginBuild(); }
-                catch (Exception ex) { error = ex.Message; } changed = true;
+                catch (Exception ex) { error = ex.Message; } finally { FPWorkbenchEditorCache.Abandon(task); } changed = true;
             }
             if (fitting != null && fitting.IsCompleted)
             {
@@ -189,7 +202,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             cancellation?.Cancel();
             if (openingMemory != null) openingMemory.ReleaseAfter(opening); else Observe(opening);
-            openingMemory = null; opening = null; pendingOpening = false;
+            openingMemory = null; FPWorkbenchEditorCache.Abandon(opening); opening = null; pendingOpening = false;
             ReleaseHistogramOperation(); Repaint();
         }
         private void ReleaseHistogramOperation()
@@ -200,11 +213,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnGUI()
         {
+            if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
             string beforeSettings = HistogramSettingsJson();
             GUILayout.Label(columnName + (string.IsNullOrEmpty(derivedId) ? "" : " • Calculated") + (string.IsNullOrEmpty(corrections) ? " • Original snapshot" : " • Effective snapshot"), EditorStyles.boldLabel);
             if (equationLabel != null) GUILayout.Label(equationLabel, EditorStyles.miniLabel);
             using (new EditorGUI.DisabledScope(Busy || dataset == null))
             {
+                using (new EditorGUI.DisabledScope(!string.IsNullOrEmpty(sourceSheetId)))
                 using (new EditorGUILayout.HorizontalScope())
                 { firstRow = EditorGUILayout.LongField("First row (0-based)", firstRow); endRow = EditorGUILayout.LongField("End row (exclusive)", endRow); }
                 using (new EditorGUILayout.HorizontalScope())

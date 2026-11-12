@@ -26,6 +26,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         private double requestedStart, requestedEnd;
         private bool disposed, failedQuery;
         private int leases;
+        private IDisposable cacheLease;
         private readonly FPWorkbenchPlotSettings observed = new FPWorkbenchPlotSettings();
         public FPWorkbenchPlotSettings Settings { get; }
         public FPWorkbenchSeriesCache Series { get; private set; }
@@ -57,7 +58,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         }
         public Lease Retain()
         {
-            Check(); leases++; return new Lease(this);
+            Check(); if (leases == 0) cacheLease = dataset.RetainCache();
+            leases++; return new Lease(this);
         }
         public sealed class Lease : IDisposable
         {
@@ -75,6 +77,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         {
             Check(); var candidate = (binding ?? throw new ArgumentNullException(nameof(binding))).Copy(dataset.ColumnCount);
             candidate.ResolveDerivedY(calculations); candidate.ResolveDerivedX(calculations); pending = candidate;
+            if (requestedBinding != null && !requestedBinding.Rows.SameAs(pending.Rows)) ClearView();
             requestedBinding = pending;
             generation++; buildCancel?.Cancel(); queryCancel?.Cancel(); Error = null; failedQuery = false; WaitingForMemory = false;
             if (fit) Settings.HasRange = false;
@@ -176,6 +179,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             buildSlot?.ReleaseAfter(build); buildMemory = null; buildSlot = null; build = null;
             if (queryMemory != null) queryMemory.ReleaseAfter(query); else Observe(query);
             queryMemory = null; query = null; ClearView(); Series = null; pending = null; WaitingForMemory = false;
+            cacheLease?.Dispose(); cacheLease = null;
         }
         private bool TryAdmitBuild()
         {

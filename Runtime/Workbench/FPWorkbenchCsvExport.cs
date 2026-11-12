@@ -58,7 +58,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (Directory.Exists(target) || File.Exists(target)) throw new IOException("Choose a new export directory; existing files are never replaced.");
             string parent = Path.GetDirectoryName(target);
             if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent)) throw new DirectoryNotFoundException("The export parent directory must exist.");
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 string staging = Path.Combine(parent, ".fp-export-" + Guid.NewGuid().ToString("N"));
                 try

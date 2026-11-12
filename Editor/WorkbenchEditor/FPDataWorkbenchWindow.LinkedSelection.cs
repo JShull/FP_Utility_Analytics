@@ -69,6 +69,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private static int Minimum(int[] values) { int result = int.MaxValue; foreach (int value in values) result = Math.Min(result, value); return result; }
         private void DrawLinkedRow(Sheet sheet, long row, Rect rect)
         {
+            var span = sheet.Binding.Rows;
+            if (span.Enabled) {
+                if (!span.Contains(row)) EditorGUI.DrawRect(rect, new Color(.45f, .45f, .45f, .22f));
+                if (row == span.FirstRow || row == span.EndRow - 1) EditorGUI.DrawRect(new Rect(rect.x, row == span.FirstRow ? rect.y : rect.yMax - 2, rect.width, 2), new Color(.4f, .8f, 1, .8f));
+            }
             if (sheet.Dataset.DatasetId == linkedDataset && row == linkedRow) EditorGUI.DrawRect(rect, new Color(.2f, .85f, .95f, .12f));
         }
         private void DrawLinkedCell(Sheet sheet, long row, int column, Rect rect)

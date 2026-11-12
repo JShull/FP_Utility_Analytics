@@ -1,4 +1,4 @@
-// Copyright (c) 2026 John B. Shull. See LICENSE.md.
+﻿// Copyright (c) 2026 John B. Shull. See LICENSE.md.
 namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
 {
     using System;
@@ -9,6 +9,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     using System.Threading.Tasks;
     using UnityEditor;
     using UnityEngine;
+    using FuzzPhyte.Utility.Editor;
 
     /// <summary>Initial virtualized CSV workbench. All source reads and indexing run in runtime services.</summary>
     public sealed partial class FPDataWorkbenchWindow : EditorWindow
@@ -17,6 +18,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             public string Id = Guid.NewGuid().ToString("N"), Name, Source, Cache;
             public long FirstRow;
+            [NonSerialized] public long RowRangeDraftFirst, RowRangeDraftEnd;
             public int FirstColumn, PlotColumn;
             public FPWorkbenchSeriesBinding Binding = new FPWorkbenchSeriesBinding();
             public FPWorkbenchPlotSettings Plot = new FPWorkbenchPlotSettings();
@@ -40,6 +42,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             public FPWorkbenchColumnLayout Columns;
             public FPWorkbenchCsvProfile Import;
             [NonSerialized] public FPWorkbenchCsvDataset Dataset;
+            [NonSerialized] public IDisposable DiskLease;
             [NonSerialized] public FPWorkbenchTableView Table;
             [NonSerialized] public FPWorkbenchFormulaSet TableDefinitions;
             [NonSerialized] public FPWorkbenchTypedSchema TableTypedDefinitions;
@@ -75,6 +78,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private Rect tableRect;
         private int resizeControl;
         private bool resizeSidebar;
+        private Vector2 resizeStartMouse;
+        private float resizeStartSize;
+        private Rect plotDividerRect;
         private double repaintUntil, lastResizeRepaint;
         private Vector2 lastWindowPixels;
         private float lastSidebarWidth;
@@ -90,7 +96,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         public static void Open() => GetWindow<FPDataWorkbenchWindow>("Data Workbench");
         private void OnEnable()
         {
-            windowActive = true;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
             minSize = new Vector2(720, 480);
             InitializeCorrectionUndo();
             InitializePlotUndo();
@@ -102,14 +108,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (!string.IsNullOrEmpty(sheet.Cache)) {
                     string cache = sheet.Cache; var token = sheet.Lifetime.Token;
                     // Older serialized windows have no saved bound: admit the largest supported parser before opening.
-                    QueueSheetLoad(sheet, () => FPWorkbenchCsvDataset.OpenAsync(cache, token), sheet.Import ?? new FPWorkbenchCsvProfile { MaximumRecordBytes = 16 * 1024 * 1024, MaximumColumns = 4096 });
+                    var reference = registeredSources?.Find(s => s.DatasetId == sheet.Dataset?.DatasetId || s.CacheDirectory == cache);
+                    QueueSheetLoad(sheet, () => reference == null ? FPWorkbenchEditorCache.OpenAsync(cache, token) : FPWorkbenchEditorCache.OpenAsync(reference, token), sheet.Import ?? new FPWorkbenchCsvProfile { MaximumRecordBytes = 16 * 1024 * 1024, MaximumColumns = 4096 });
                 }
             }
             EditorApplication.update += Tick;
         }
         private void OnDisable()
         {
-            windowActive = false;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable);
+            PreserveWorkingMetadata();
             pendingLinkedDataset = null; pendingLinkedColumns = null;
             CancelSelectionFrame();
             CancelClipboard();
@@ -138,7 +146,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             // Editor update may already have captured its invocation list when this window closes.
             if (!windowActive) return;
-            bool changed = TickClipboard() | TickWorkbook() | TickChanges() | TickSourceOpening() | TickExport() | TickLinkedSelection();
+            bool changed = TickDiskCache() | TickClipboard() | TickWorkbook() | TickChanges() | TickSourceOpening() | TickExport() | TickLinkedSelection();
             double now = EditorApplication.timeSinceStartup;
             Vector2 pixels = position.size;
             if (pixels != lastWindowPixels || sidebar != lastSidebarWidth)
@@ -158,7 +166,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (sheet.PendingLoading != null) { TryStartSheetLoad(sheet); changed = true; }
                 if (sheet.Loading == null || !sheet.Loading.IsCompleted) continue;
                 if (sheet.Loading.Status == TaskStatus.RanToCompletion)
-                { sheet.Dataset = sheet.Loading.Result; sheet.Cache = sheet.Dataset.CacheDirectory; if (sheet.Columns == null) RestoreColumns(sheet); else sheet.Columns.EnsureColumns(TableColumnCount(sheet.Dataset)); sheet.ColumnNames = new string[sheet.Dataset.ColumnCount]; for (int c = 0; c < sheet.ColumnNames.Length; c++) sheet.ColumnNames[c] = (c + 1) + ": " + sheet.Dataset.GetColumnName(c); status = "Indexed " + sheet.Dataset.RowCount.ToString("N0") + " logical data rows."; }
+                { sheet.Dataset = sheet.Loading.Result; sheet.DiskLease?.Dispose(); sheet.DiskLease = FPWorkbenchEditorCache.Retain(sheet.Dataset); sheet.Cache = sheet.Dataset.CacheDirectory; if (sheet.Columns == null) RestoreColumns(sheet); else sheet.Columns.EnsureColumns(TableColumnCount(sheet.Dataset)); sheet.ColumnNames = new string[sheet.Dataset.ColumnCount]; for (int c = 0; c < sheet.ColumnNames.Length; c++) sheet.ColumnNames[c] = (c + 1) + ": " + sheet.Dataset.GetColumnName(c); status = "Indexed " + sheet.Dataset.RowCount.ToString("N0") + " logical data rows."; }
                 else if (sheet.Loading.IsFaulted) error = sheet.Loading.Exception.GetBaseException().Message;
                 ClearImportPreview(sheet); sheet.LoadMemory?.Dispose(); sheet.LoadMemory = null;
                 sheet.Loading = null; sheet.WaitingForLoad = false; changed = true;
@@ -206,12 +214,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             try
             {
                 string full = Path.GetFullPath(path);
-                string cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FuzzPhyte", "Analytics", "Workbench", Guid.NewGuid().ToString("N"));
-                var sheet = new Sheet { Name = Path.GetFileNameWithoutExtension(full), Source = full, Cache = cache, Lifetime = new CancellationTokenSource() };
                 var profile = new FPWorkbenchCsvProfile { EncodingCodePage = encoding == 0 ? 65001 : 1252 };
+                var reference = registeredSources?.Find(s => string.Equals(Path.GetFullPath(s.SourcePath), full, StringComparison.OrdinalIgnoreCase) && s.Import.EncodingCodePage == profile.EncodingCodePage && s.Import.Delimiter == profile.Delimiter);
+                var sheet = new Sheet { Name = Path.GetFileNameWithoutExtension(full), Source = full, Cache = reference?.CacheDirectory, Lifetime = new CancellationTokenSource() };
                 var token = sheet.Lifetime.Token; var reporter = new ImportProgress(this);
                 var previews = new ImportPreviewReports(); sheet.PreviewReports = previews;
-                QueueSheetLoad(sheet, () => FPWorkbenchCsvDataset.ImportAsync(full, cache, profile, token, reporter, previews), profile);
+                QueueSheetLoad(sheet, () => reference == null ? FPWorkbenchEditorCache.ImportAsync(full, profile, token, reporter, previews) : FPWorkbenchEditorCache.OpenAsync(reference, token), profile);
                 sheets.Add(sheet); active = sheets.Count - 1; error = null; progress = 0; status = "Hashing/indexing in background; source remains unchanged.";
             }
             catch (Exception ex) { error = ex.Message; }
@@ -224,6 +232,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnGUI()
         {
+            // Allocate before variable table/sidebar controls so capture survives layout changes.
+            int sidebarControl = GUIUtility.GetControlID(7381, FocusType.Passive);
+            int plotControl = GUIUtility.GetControlID(7382, FocusType.Passive);
+            ContinueResize();
             ColumnInput();
             ColumnDragInput();
             using (new EditorGUILayout.HorizontalScope())
@@ -237,11 +249,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     if (sheet?.Dataset != null)
                     {
                         DrawNavigation(sheet);
+                        DrawRowRangeTableControls(sheet);
                         Rect currentTable = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
                         if (Event.current.type == EventType.Repaint) { tableRect = currentTable; lastWindowPixels = position.size; lastSidebarWidth = sidebar; }
                         DrawTable(sheet, currentTable);
                         Rect divider = GUILayoutUtility.GetRect(10, 6, GUILayout.ExpandWidth(true));
-                        Resize(divider, false);
+                        if (Event.current.type == EventType.Repaint) plotDividerRect = divider;
+                        Resize(divider, false, plotControl);
                         Rect plot = GUILayoutUtility.GetRect(100, plotHeight, GUILayout.ExpandWidth(true));
                         bool matches = summary != null && sheet.Id == summarySheet && sheet.Series == requestedSeries;
                         FPWorkbenchPlotView.Draw(plot, matches ? summary : null, sheet.Plot,
@@ -251,27 +265,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                             GUI.Label(new Rect(plot.x + 80, plot.y + 23, plot.width - 90, 20), "Updating view… (previous range shown)", EditorStyles.miniLabel);
                     }
                     else if (sheet?.Preview != null) DrawImportPreview(sheet);
-                    else EditorGUILayout.HelpBox(sheet?.WaitingForLoad == true ? "Waiting for shared memory/background capacity…" : IsLoading(sheet) ? "Indexing/verifying source in the background…" : "Import a CSV from the source panel.", MessageType.Info);
+                    else EditorGUILayout.HelpBox(sheet?.WaitingForLoad == true ? "Waiting for shared memory/background capacity…" : IsLoading(sheet) ? "Indexing/verifying source in the background…" : "Open Workbook Settings to import a CSV or open a workbook.", MessageType.Info);
                 }
             }
-            Resize(new Rect(sidebar + 2, 0, 6, position.height), true);
+            Resize(new Rect(sidebar + 2, 0, 6, position.height), true, sidebarControl);
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
             EditorGUILayout.LabelField(status, EditorStyles.miniLabel);
         }
         private void DrawSidebar()
         {
             GUILayout.Label("Data Workbench", EditorStyles.boldLabel);
-            DrawWorkbookControls();
-            DrawChangeFiles();
-            encoding = EditorGUILayout.Popup("CSV encoding", encoding, new[] { "UTF-8 (strict)", "Windows-1252" });
-            importPath = EditorGUILayout.TextField("CSV path", importPath);
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button("Browse…")) { string p = EditorUtility.OpenFilePanel("Open CSV", "", "csv"); if (!string.IsNullOrEmpty(p)) importPath = p; }
-                if (GUILayout.Button("Add sheet")) AddCsv(importPath);
-            }
+            if (GUILayout.Button("Workbook Settings…")) FPWorkbenchWorkbookSettingsWindow.Open(this);
+            EditorGUILayout.LabelField(workbookName, EditorStyles.miniLabel);
             var sheet = Current;
             if (sheet == null) return;
+            SidebarSection("Active sheet");
             sheet.Name = EditorGUILayout.TextField("Sheet name", sheet.Name);
             if (IsLoading(sheet))
             {
@@ -282,14 +290,47 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 DrawCorrectionControls(sheet);
                 DrawPageBudget();
+                DrawRowRangeControls(sheet);
+                FPMeshPreviewEditorUtility.DrawSectionDivider();
                 DrawTypedSchemaControls(sheet);
+                FPMeshPreviewEditorUtility.DrawSectionDivider();
                 DrawSourceUnitControls(sheet);
+                FPMeshPreviewEditorUtility.DrawSectionDivider();
                 DrawCalculationControls(sheet);
+                FPMeshPreviewEditorUtility.DrawSectionDivider();
                 DrawExportControls(sheet);
                 DrawPlotControls(sheet);
             }
+            FPMeshPreviewEditorUtility.DrawSectionDivider();
             if (GUILayout.Button("Close sheet"))
                 CloseCurrentSheet();
+        }
+        internal void DrawWorkbookSettings()
+        {
+            DrawWorkbookControls();
+            SidebarSection("Shared Workbench cache");
+            EditorGUILayout.HelpBox("Cache root and quota apply across all workbooks. Active datasets and figures keep their caches protected.", MessageType.Info);
+            DrawDiskCacheControls();
+            SidebarSection("Corrections files");
+            DrawChangeFiles();
+            SidebarSection("CSV import");
+            encoding = EditorGUILayout.Popup("CSV encoding", encoding, new[] { "UTF-8 (strict)", "Windows-1252" });
+            importPath = EditorGUILayout.TextField("CSV path", importPath);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Browse…")) { string p = EditorUtility.OpenFilePanel("Open CSV", "", "csv"); if (!string.IsNullOrEmpty(p)) importPath = p; }
+                if (GUILayout.Button("Add sheet")) AddCsv(importPath);
+            }
+            if (IsLoading(Current)) EditorGUILayout.LabelField("Index progress", progress.ToString("P0"));
+            if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
+            if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.None);
+        }
+        [SerializeField] private string settingsOwnerId = Guid.NewGuid().ToString("N");
+        internal string SettingsOwnerId => settingsOwnerId;
+        private static void SidebarSection(string title)
+        {
+            FPMeshPreviewEditorUtility.DrawSectionDivider();
+            GUILayout.Label(title, EditorStyles.boldLabel);
         }
         private void CloseCurrentSheet()
         {
@@ -388,7 +429,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 bool calculated = schemaColumn >= sheet.Dataset.ColumnCount;
                 if (c < FrozenCount(sheet)) EditorGUI.DrawRect(new Rect(edge, rect.y, visibleWidth, rect.height), new Color(.2f, .45f, .55f, .13f));
                 if (calculated) EditorGUI.DrawRect(new Rect(edge, rect.y, visibleWidth, 20), new Color(.4f, .3f, .65f, .25f));
-                GUI.Label(new Rect(edge + 3, rect.y, Math.Max(1, visibleWidth - 8), 20), new GUIContent(calculated ? "ƒ " + sheet.Table.ColumnName(schemaColumn) : sheet.Dataset.GetColumnName(schemaColumn), "Units: " + ColumnUnitLabel(sheet, schemaColumn) + ". No implicit conversion. Drag the right edge to resize; double-click or right-click the edge to reset to Auto."), EditorStyles.boldLabel);
+                string token = calculated ? "D" + (schemaColumn - sheet.Dataset.ColumnCount + 1) : "C" + (schemaColumn + 1);
+                string name = calculated ? "ƒ " + sheet.Table.ColumnName(schemaColumn) : sheet.Dataset.GetColumnName(schemaColumn);
+                var header = new Rect(edge + 3, rect.y, Math.Max(1, visibleWidth - 8), 20);
+                float tokenWidth = Math.Min(header.width, EditorStyles.miniLabel.CalcSize(new GUIContent(token)).x + 8);
+                string tooltip = token + ": " + name + ". Formula reference uses the source/definition order, not the displayed position. Units: " + ColumnUnitLabel(sheet, schemaColumn) + ". No implicit conversion. Drag the right edge to resize; double-click or right-click the edge to reset to Auto.";
+                GUI.Label(new Rect(header.x, header.y, Math.Max(0, header.width - tokenWidth), 20), new GUIContent(name, tooltip), EditorStyles.boldLabel);
+                GUI.Label(new Rect(header.xMax - tokenWidth, header.y, tokenWidth, 20), new GUIContent(token, tooltip), EditorStyles.centeredGreyMiniLabel);
                 ColumnGrip(sheet, schemaColumn, new Rect(edge + visibleWidth - 4, rect.y, 8, 20), width);
                 ColumnHeaderMenu(sheet, schemaColumn, new Rect(edge + 3, rect.y, Math.Max(0, visibleWidth - 9), 20));
                 ColumnDragHeader(sheet, schemaColumn, new Rect(edge + 3, rect.y, Math.Max(0, visibleWidth - 9), 20));
@@ -424,25 +471,31 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                         SelectCell(sheet, cell.Row, cell.Column, page.Values[r][c]);
                     }
                 }
+                DrawRowRangeOverlay(sheet, page.FirstRow + r, new Rect(rect.x, y, rect.width, 20));
             }
         }
-        private void Resize(Rect rect, bool horizontal)
+        private void Resize(Rect rect, bool horizontal, int control)
         {
             EditorGUIUtility.AddCursorRect(rect, horizontal ? MouseCursor.ResizeHorizontal : MouseCursor.ResizeVertical);
-            int control = GUIUtility.GetControlID(horizontal ? 7381 : 7382, FocusType.Passive);
             var e = Event.current;
-            if (e.type == EventType.MouseDown && e.button == 0 && rect.Contains(e.mousePosition))
-            { resizeControl = control; resizeSidebar = horizontal; GUIUtility.hotControl = control; e.Use(); }
-            if (resizeControl == control && GUIUtility.hotControl == control)
+            if (GUIUtility.hotControl != 0 || e.type != EventType.MouseDown || e.button != 0 || !rect.Contains(e.mousePosition)) return;
+            resizeControl = control; resizeSidebar = horizontal;
+            resizeStartMouse = e.mousePosition; resizeStartSize = horizontal ? sidebar : plotHeight;
+            GUIUtility.hotControl = control; e.Use();
+        }
+        private void ContinueResize()
+        {
+            if (resizeControl == 0) return;
+            if (GUIUtility.hotControl != resizeControl) { resizeControl = 0; return; }
+            var e = Event.current;
+            if (e.type == EventType.MouseDrag)
             {
-                if (e.type == EventType.MouseDrag)
-                {
-                    if (resizeSidebar) sidebar = Mathf.Clamp(e.mousePosition.x, 220, Math.Max(220, position.width - 400));
-                    else plotHeight = Mathf.Clamp(position.height - e.mousePosition.y - 40, 100, Math.Max(100, position.height - 240));
-                    e.Use(); Repaint();
-                }
-                else if (e.type == EventType.MouseUp) { GUIUtility.hotControl = 0; resizeControl = 0; e.Use(); }
+                if (resizeSidebar) sidebar = Mathf.Clamp(resizeStartSize + e.mousePosition.x - resizeStartMouse.x, 220, Math.Max(220, position.width - 400));
+                else plotHeight = Mathf.Clamp(resizeStartSize + resizeStartMouse.y - e.mousePosition.y, 100, Math.Max(100, position.height - 240));
+                e.Use(); Repaint();
             }
+            else if (e.type == EventType.MouseUp && e.button == 0)
+            { GUIUtility.hotControl = 0; resizeControl = 0; e.Use(); Repaint(); }
         }
     }
 }

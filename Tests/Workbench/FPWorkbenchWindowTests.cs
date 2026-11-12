@@ -13,6 +13,81 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
     public sealed class FPWorkbenchWindowTests
     {
         private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+        [UnityTest] public IEnumerator WorkbookSettingsReusesItsOwnerAndClosingItPreservesWorkbookState()
+        {
+            var first = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>();
+            var second = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>();
+            FPWorkbenchWorkbookSettingsWindow settings = null, other = null;
+            var type = typeof(FPWorkbenchWorkbookSettingsWindow);
+            var open = type.GetMethod("Open", BindingFlags.Static | BindingFlags.NonPublic);
+            try {
+                first.Show(); second.Show();
+                first.GetType().GetField("workbookName", Private).SetValue(first, "First workbook");
+                settings = (FPWorkbenchWorkbookSettingsWindow)open.Invoke(null, new object[] { first });
+                Assert.That(open.Invoke(null, new object[] { first }), Is.SameAs(settings));
+                other = (FPWorkbenchWorkbookSettingsWindow)open.Invoke(null, new object[] { second });
+                Assert.That(other, Is.Not.SameAs(settings));
+                Assert.That(type.GetField("owner", Private).GetValue(settings), Is.SameAs(first));
+                Assert.That(type.GetField("owner", Private).GetValue(other), Is.SameAs(second));
+                yield return null;
+                string serialized = UnityEditor.EditorJsonUtility.ToJson(settings);
+                settings.Close(); settings = null;
+                Assert.That(first != null, Is.True);
+                Assert.That(first.GetType().GetField("windowActive", Private).GetValue(first), Is.EqualTo(true));
+                Assert.That(first.GetType().GetField("workbookName", Private).GetValue(first), Is.EqualTo("First workbook"));
+                settings = ScriptableObject.CreateInstance<FPWorkbenchWorkbookSettingsWindow>();
+                UnityEditor.EditorJsonUtility.FromJsonOverwrite(serialized, settings); settings.Show();
+                yield return null; yield return null;
+                Assert.That(type.GetField("owner", Private).GetValue(settings), Is.SameAs(first));
+                first.Close(); first = null;
+                settings.Repaint(); yield return null;
+                Assert.That(settings != null, Is.True, "An orphaned settings panel should show guidance instead of recreating or retargeting a workbook.");
+            }
+            finally {
+                if (settings != null) settings.Close(); if (other != null) other.Close();
+                if (first != null) first.Close(); if (second != null) second.Close();
+            }
+        }
+        [UnityTest] public IEnumerator PlotDividerTracksGrabOffsetAcrossRepaintsWithoutReloadingTable()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "fp-divider-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root); string csv = Path.Combine(root, "rows.csv");
+            var lines = new string[301]; lines[0] = "X,Y";
+            for (int i = 1; i < lines.Length; i++) lines[i] = i + "," + (i * 2);
+            File.WriteAllLines(csv, lines);
+            var window = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>(); var type = window.GetType();
+            try
+            {
+                window.ShowUtility(); window.position = new Rect(40, 40, 1000, 800);
+                type.GetMethod("AddCsv", Private).Invoke(window, new object[] { csv });
+                var pageField = type.GetField("page", Private); var dividerField = type.GetField("plotDividerRect", Private);
+                var heightField = type.GetField("plotHeight", Private); var deadline = DateTime.UtcNow.AddSeconds(10);
+                while (DateTime.UtcNow < deadline && (pageField.GetValue(window) == null || ((Rect)dividerField.GetValue(window)).width < 100)) yield return null;
+                Assert.That(pageField.GetValue(window), Is.Not.Null);
+                var page = pageField.GetValue(window); float initial = (float)heightField.GetValue(window);
+                var grab = ((Rect)dividerField.GetValue(window)).center + new Vector2(0, 2);
+                void Send(EventType kind, Vector2 mouse) => window.SendEvent(new Event { type = kind, button = 0, mousePosition = mouse });
+                Send(EventType.MouseDown, grab);
+                int captured = (int)type.GetField("resizeControl", Private).GetValue(window);
+                Assert.That(captured, Is.Not.Zero);
+                foreach (float offset in new[] { -1f, -80f, 30f, -60f })
+                {
+                    Send(EventType.MouseDrag, grab + Vector2.up * offset);
+                    Assert.That((float)heightField.GetValue(window), Is.EqualTo(initial - offset).Within(.01f), "No offset jump or capture loss after the table height changes.");
+                    window.Repaint(); yield return null; yield return null;
+                    Assert.That((int)type.GetField("resizeControl", Private).GetValue(window), Is.EqualTo(captured));
+                    Assert.That(pageField.GetValue(window), Is.SameAs(page), "Vertical resizing must reuse the loaded table page.");
+                }
+                Send(EventType.MouseUp, grab + Vector2.up * -60);
+                Assert.That((int)type.GetField("resizeControl", Private).GetValue(window), Is.Zero);
+                window.Repaint(); yield return null; yield return null;
+                grab = ((Rect)dividerField.GetValue(window)).center;
+                Send(EventType.MouseDown, grab); Send(EventType.MouseDrag, grab + Vector2.up * 10); Send(EventType.MouseUp, grab + Vector2.up * 10);
+                Assert.That((float)heightField.GetValue(window), Is.EqualTo(initial + 50).Within(.01f));
+                Assert.That(type.GetField("error", Private).GetValue(window), Is.Null);
+            }
+            finally { window.Close(); UnityEngine.Object.DestroyImmediate(window); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
         [UnityTest] public IEnumerator ClosingWindowKeepsPendingPageReservationsUntilWorkersTerminate()
         {
             var budget = new FPWorkbenchMemoryBudget(1024, 2);

@@ -40,7 +40,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 column < 0 || column >= (derived ? program.ColumnCount : dataset.ColumnCount) ||
                 (invalidPolicy != FPWorkbenchInvalidPolicy.Reject && invalidPolicy != FPWorkbenchInvalidPolicy.Skip)) throw new ArgumentException("Invalid reduction source, column, range or policy.");
             var evaluator = program.CreateEvaluator(changes);
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 cancellation.ThrowIfCancellationRequested();
                 var result = new FPWorkbenchReductionResult { DatasetId = dataset.DatasetId, FormulaFingerprint = program.Fingerprint,

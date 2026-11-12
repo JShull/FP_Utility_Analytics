@@ -92,13 +92,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
-    public sealed class FPWorkbenchLoadedDocument
+    public sealed class FPWorkbenchLoadedDocument : IDisposable
     {
+        private IReadOnlyList<IDisposable> cacheLeases;
         public FPWorkbenchDocument Document { get; }
         public IReadOnlyList<FPWorkbenchCsvDataset> Datasets { get; }
         public IReadOnlyList<FPWorkbenchCsvDataset> SourceDatasets { get; }
-        internal FPWorkbenchLoadedDocument(FPWorkbenchDocument document, FPWorkbenchCsvDataset[] datasets, FPWorkbenchCsvDataset[] sourceDatasets)
-        { Document = document; Datasets = Array.AsReadOnly(datasets); SourceDatasets = Array.AsReadOnly(sourceDatasets); }
+        internal FPWorkbenchLoadedDocument(FPWorkbenchDocument document, FPWorkbenchCsvDataset[] datasets, FPWorkbenchCsvDataset[] sourceDatasets, IReadOnlyList<IDisposable> leases = null)
+        { Document = document; Datasets = Array.AsReadOnly(datasets); SourceDatasets = Array.AsReadOnly(sourceDatasets); cacheLeases = leases; }
+        /// <summary>Release admission pins after views acquire their own leases, or when a candidate is abandoned.</summary>
+        public void Dispose()
+        { var leases = Interlocked.Exchange(ref cacheLeases, null); if (leases != null) foreach (var lease in leases) lease.Dispose(); }
     }
 
     /// <summary>Bounded versioned document persistence. No source data is embedded or overwritten.</summary>
@@ -165,18 +169,25 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             document.Validate();
             return document;
         }
-        public static Task<FPWorkbenchLoadedDocument> LoadAsync(string path, CancellationToken cancellation = default)
+        public static Task<FPWorkbenchLoadedDocument> LoadAsync(string path, CancellationToken cancellation = default, FPWorkbenchManagedCache managedCache = null)
         {
             string source = Path.GetFullPath(path);
             return Task.Run(async () =>
             {
+                var cacheLeases = new List<IDisposable>(); bool published = false;
+                try {
                 cancellation.ThrowIfCancellationRequested();
                 var document = ReadMetadata(source, cancellation);
                 var sourceDatasets = new FPWorkbenchCsvDataset[document.Sources.Count];
                 for (int i = 0; i < sourceDatasets.Length; i++)
                 {
                     cancellation.ThrowIfCancellationRequested(); var sourceDocument = document.Sources[i];
-                    var data = await FPWorkbenchCsvDataset.OpenAsync(sourceDocument.CacheDirectory, cancellation).ConfigureAwait(false);
+                    FPWorkbenchCsvDataset data;
+                    if (managedCache == null) data = await FPWorkbenchCsvDataset.OpenAsync(sourceDocument.CacheDirectory, cancellation).ConfigureAwait(false);
+                    else {
+                        var lease = await managedCache.OpenAsync(sourceDocument, cancellation).ConfigureAwait(false);
+                        cacheLeases.Add(lease); data = lease.Dataset;
+                    }
                     if (data.DatasetId != sourceDocument.DatasetId || !SamePath(data.SourcePath, sourceDocument.SourcePath) ||
                         data.ImportProfile.Delimiter != sourceDocument.Import.Delimiter || data.ImportProfile.EncodingCodePage != sourceDocument.Import.EncodingCodePage)
                         throw new InvalidDataException("Registered source revision/profile differs: " + sourceDocument.Name);
@@ -195,7 +206,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     var dataset = Array.Find(sourceDatasets, d => d.DatasetId == sheet.DatasetId);
                     var sourceMetadata = document.Sources.Find(s => s.DatasetId == sheet.DatasetId);
                     int tableColumns = dataset.ColumnCount + (sourceMetadata.HasCalculations ? sourceMetadata.Calculations.Columns.Count : 0);
-                    if (!SamePath(sheet.SourcePath, dataset.SourcePath) || !SamePath(sheet.CacheDirectory, dataset.CacheDirectory) || sheet.DatasetId != dataset.DatasetId) throw new InvalidDataException("Workbook source revision does not match its referenced cache: " + sheet.Name);
+                    if (!SamePath(sheet.SourcePath, dataset.SourcePath) || !SamePath(sheet.CacheDirectory, managedCache == null ? dataset.CacheDirectory : sourceMetadata.CacheDirectory) || sheet.DatasetId != dataset.DatasetId) throw new InvalidDataException("Workbook source revision does not match its referenced cache: " + sheet.Name);
                     if (sheet.FirstRow > Math.Max(0, dataset.RowCount - 1) || sheet.FirstColumn >= tableColumns || sheet.PlotColumn >= tableColumns) throw new InvalidDataException("Saved table position is outside the source: " + sheet.Name);
                     var actualImport = dataset.ImportProfile;
                     if (sheet.Import.Delimiter != actualImport.Delimiter || sheet.Import.EncodingCodePage != actualImport.EncodingCodePage) throw new InvalidDataException("Saved import interpretation differs from the indexed source: " + sheet.Name);
@@ -211,7 +222,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                         var program = sourceMetadata.CompileProgram(dataset);
                         sheet.Selection.Resolve(new FPWorkbenchTableView(dataset, program));
                     }
-                    sheet.Binding.Copy(dataset.ColumnCount); sheet.Columns.EnsureColumns(tableColumns);
+                    sheet.Binding.Copy(dataset.ColumnCount).Rows.Validate(dataset.RowCount); sheet.Columns.EnsureColumns(tableColumns);
                     if (sheet.Binding.HasDerivedY || sheet.Binding.HasDerivedX)
                     {
                         try
@@ -236,6 +247,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 foreach (var figure in document.Figures)
                 {
                     var dataset = Array.Find(sourceDatasets, d => d.DatasetId == figure.DatasetId);
+                    if (dataset != null) figure.Rows.Validate(dataset.RowCount);
                     var secondary = figure.Kind == FPWorkbenchFigureKind.AlignedScatter ? Array.Find(sourceDatasets, d => d.DatasetId == figure.AlignedRecipe.RightDatasetId) : null;
                     figure.ValidateSource(dataset, secondary);
                     if (figure.Kind == FPWorkbenchFigureKind.AlignedScatter)
@@ -245,7 +257,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     }
                     if (figure.CorrectionSnapshot != null) await figure.CorrectionSnapshot.ValidateSourceAsync(dataset, cancellation).ConfigureAwait(false);
                 }
-                return new FPWorkbenchLoadedDocument(document, datasets, sourceDatasets);
+                cancellation.ThrowIfCancellationRequested();
+                // Publish updated in-memory references only after every source, annotation and figure was admitted.
+                if (managedCache != null) {
+                    for (int i = 0; i < sourceDatasets.Length; i++) document.Sources[i].CacheDirectory = sourceDatasets[i].CacheDirectory;
+                    for (int i = 0; i < datasets.Length; i++) document.Sheets[i].CacheDirectory = datasets[i].CacheDirectory;
+                }
+                var loaded = new FPWorkbenchLoadedDocument(document, datasets, sourceDatasets, cacheLeases); published = true; return loaded;
+                } finally { if (!published) foreach (var lease in cacheLeases) lease.Dispose(); }
             }, cancellation);
         }
         private static bool SamePath(string first, string second) => string.Equals(Path.GetFullPath(first), Path.GetFullPath(second), Path.DirectorySeparatorChar == '\\' ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);

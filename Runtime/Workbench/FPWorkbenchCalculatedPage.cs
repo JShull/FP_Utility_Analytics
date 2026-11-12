@@ -28,7 +28,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 throw new ArgumentOutOfRangeException("Calculated page must fit its source and 256-row/32-column limits.");
             var evaluator = program.CreateEvaluator(changes);
             int count = (int)Math.Min(rowCount, dataset.RowCount - firstRow);
-            return Task.Run(() =>
+            return dataset.RunCachedAsync(() =>
             {
                 cancellation.ThrowIfCancellationRequested();
                 using var reader = dataset.OpenReaderAt(firstRow); var parser = dataset.Parser(reader, cancellation);
