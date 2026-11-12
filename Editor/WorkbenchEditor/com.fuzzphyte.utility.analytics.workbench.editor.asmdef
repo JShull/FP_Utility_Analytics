@@ -1,0 +1,20 @@
+{
+  "name": "com.fuzzphyte.utility.analytics.workbench.editor",
+  "rootNamespace": "FuzzPhyte.Utility.Analytics.WorkBench.Editor",
+  "references": [
+    "com.fuzzphyte.utility.analytics.workbench",
+    "com.fuzzphyte.utility",
+    "com.fuzzphyte.utility.editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

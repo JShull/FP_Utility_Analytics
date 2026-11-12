@@ -1,0 +1,9 @@
+{
+  "name": "com.fuzzphyte.utility.analytics.workbench.tests",
+  "rootNamespace": "FuzzPhyte.Utility.Analytics.WorkBench.Tests",
+  "references": ["com.fuzzphyte.utility.analytics.workbench", "com.fuzzphyte.utility.analytics.workbench.editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": false,
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

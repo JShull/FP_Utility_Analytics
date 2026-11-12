@@ -1,0 +1,197 @@
+// Copyright (c) 2026 John B. Shull. See LICENSE.md.
+namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
+{
+    using System;
+    using System.Globalization;
+    using System.Threading;
+    using System.Threading.Tasks;
+    using UnityEditor;
+    using UnityEngine;
+
+    /// <summary>Snapshot histogram viewer. Serialized metadata rebuilds bounded products after reload.</summary>
+    public sealed class FPWorkbenchHistogramWindow : EditorWindow
+    {
+        [SerializeField] private string cache, datasetId, corrections, columnName;
+        [SerializeField] private string workbook, figureId = Guid.NewGuid().ToString("N");
+        [SerializeField] private string calculations, derivedId;
+        internal string WorkbookId => workbook;
+        internal string FigureId => figureId;
+        [SerializeField] private int column, bins = 32;
+        [SerializeField] private long firstRow, endRow;
+        [SerializeField] private double minimum, maximum = 1;
+        [SerializeField] private bool density, grid = true, fitOnOpen = true;
+        [SerializeField] private FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Skip;
+        private FPWorkbenchCsvDataset dataset;
+        private FPWorkbenchFormulaProgram program;
+        private FPWorkbenchChangeSnapshot snapshot;
+        private Task<FPWorkbenchCsvDataset> opening;
+        private Task<FPWorkbenchReductionResult> fitting;
+        private Task<FPWorkbenchHistogramResult> building;
+        private FPWorkbenchHistogramResult result;
+        private CancellationTokenSource cancellation;
+        private string error;
+        private GUIContent equationLabel;
+        private bool Busy => opening != null || fitting != null || building != null;
+        public static FPWorkbenchHistogramWindow Open(FPWorkbenchCsvDataset source, int sourceColumn, FPWorkbenchChangeSnapshot changes = null, string workbookId = null, FPWorkbenchFormulaProgram calculationProgram = null, string derivedColumnId = null)
+        {
+            bool derived = !string.IsNullOrEmpty(derivedColumnId);
+            if (source == null || !derived && (sourceColumn < 0 || sourceColumn >= source.ColumnCount) || changes != null && changes.DatasetId != source.DatasetId ||
+                derived && (calculationProgram == null || calculationProgram.DatasetId != source.DatasetId)) throw new ArgumentException("Histogram source/column differs.");
+            int selected = derived ? new FPWorkbenchSeriesBinding { YDerivedId = derivedColumnId }.ResolveDerivedY(calculationProgram) : sourceColumn;
+            var window = CreateInstance<FPWorkbenchHistogramWindow>(); window.cache = source.CacheDirectory; window.datasetId = source.DatasetId;
+            window.column = selected; window.columnName = derived ? calculationProgram.Name(selected) : source.GetColumnName(selected); window.endRow = source.RowCount;
+            window.derivedId = derivedColumnId; window.calculations = derived ? JsonUtility.ToJson(calculationProgram.Definition) : null;
+            window.workbook = workbookId;
+            window.corrections = changes?.Json; window.Attach(source); window.BeginFit();
+            FPDataWorkbenchWindow.RememberFigure(workbookId, window.DescribeFigure());
+            window.titleContent = new GUIContent(window.columnName + " — Histogram"); window.Show(); return window;
+        }
+        private void OnEnable()
+        {
+            minSize = new Vector2(560, 360); wantsMouseMove = true; cancellation = new CancellationTokenSource(); EditorApplication.update += Tick;
+            if (!string.IsNullOrEmpty(cache)) opening = FPWorkbenchCsvDataset.OpenAsync(cache, cancellation.Token);
+        }
+        private void OnDisable()
+        {
+            if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure());
+            EditorApplication.update -= Tick; cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
+            Observe(opening); Observe(fitting); Observe(building); opening = null; fitting = null; building = null;
+            dataset = null; program = null; snapshot = null; result = null;
+        }
+        internal FPWorkbenchFigureDocument DescribeFigure() => new FPWorkbenchFigureDocument
+        {
+            Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram,
+            HistogramColumn = string.IsNullOrEmpty(derivedId) ? column : 0, HistogramDerivedId = derivedId, HistogramBins = bins, FirstRow = firstRow, EndRow = endRow, Minimum = minimum, Maximum = maximum,
+            Density = density, Grid = grid, FitHistogramOnOpen = fitOnOpen, InvalidPolicy = invalidPolicy,
+            HasCorrectionSnapshot = !string.IsNullOrEmpty(corrections),
+            HasCalculationSnapshot = !string.IsNullOrEmpty(calculations),
+            CalculationSnapshot = string.IsNullOrEmpty(calculations) ? null : JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations),
+            CorrectionSnapshot = string.IsNullOrEmpty(corrections) ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(corrections)
+        };
+        internal static FPWorkbenchHistogramWindow OpenSaved(string workbookId, FPWorkbenchCsvDataset source, FPWorkbenchFigureDocument saved)
+        {
+            saved.Validate(); var window = CreateInstance<FPWorkbenchHistogramWindow>();
+            window.workbook = workbookId; window.figureId = saved.Id; window.cache = source.CacheDirectory; window.datasetId = saved.DatasetId;
+            window.column = saved.HistogramColumn; window.bins = saved.HistogramBins; window.derivedId = saved.HistogramDerivedId;
+            window.calculations = saved.HasCalculationSnapshot ? JsonUtility.ToJson(saved.CalculationSnapshot) : null;
+            window.firstRow = saved.FirstRow; window.endRow = saved.EndRow; window.minimum = saved.Minimum; window.maximum = saved.Maximum;
+            window.density = saved.Density; window.grid = saved.Grid; window.fitOnOpen = saved.FitHistogramOnOpen; window.invalidPolicy = saved.InvalidPolicy;
+            window.corrections = saved.CorrectionSnapshot == null ? null : JsonUtility.ToJson(saved.CorrectionSnapshot); window.Attach(source);
+            window.columnName = string.IsNullOrEmpty(window.derivedId) ? source.GetColumnName(window.column) : window.program.Name(window.column);
+            if (window.fitOnOpen) window.BeginFit(); else window.BeginBuild(); window.titleContent = new GUIContent(saved.Name); window.Show(); return window;
+        }
+        private static void Observe(Task task) { if (task != null) task.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted); }
+        private void Attach(FPWorkbenchCsvDataset source)
+        {
+            if (source.DatasetId != datasetId) throw new InvalidOperationException("Histogram source revision changed.");
+            dataset = source; program = FPWorkbenchFormulaProgram.Compile(source, string.IsNullOrEmpty(calculations) ? new FPWorkbenchFormulaSet { DatasetId = datasetId } : JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations));
+            if (!string.IsNullOrEmpty(derivedId)) column = new FPWorkbenchSeriesBinding { YDerivedId = derivedId }.ResolveDerivedY(program);
+            else if (column < 0 || column >= source.ColumnCount) throw new InvalidOperationException("Histogram source column changed.");
+            equationLabel = string.IsNullOrEmpty(derivedId) ? null : new GUIContent("Formula snapshot: " + program.Expression(column), program.Expression(column));
+            snapshot = string.IsNullOrEmpty(corrections) ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(corrections).Snapshot();
+        }
+        private void Prepare()
+        {
+            cancellation?.Dispose(); cancellation = new CancellationTokenSource(); error = null;
+        }
+        private void BeginFit()
+        {
+            if (Busy || dataset == null) return;
+            try { Prepare(); fitting = FPWorkbenchReduction.CalculateAsync(dataset, program, column, !string.IsNullOrEmpty(derivedId), firstRow, endRow, invalidPolicy, snapshot, cancellation: cancellation.Token); }
+            catch (Exception ex) { error = ex.Message; }
+        }
+        private void BeginBuild()
+        {
+            if (Busy || dataset == null) return;
+            try { Prepare(); building = FPWorkbenchHistogram.CalculateAsync(dataset, program, column, !string.IsNullOrEmpty(derivedId), firstRow, endRow, minimum, maximum, bins, invalidPolicy, snapshot, cancellation: cancellation.Token); }
+            catch (Exception ex) { error = ex.Message; }
+        }
+        private void Tick()
+        {
+            bool changed = false;
+            if (opening != null && opening.IsCompleted)
+            {
+                var task = opening; opening = null;
+                try { Attach(task.GetAwaiter().GetResult()); if (fitOnOpen) BeginFit(); else BeginBuild(); }
+                catch (Exception ex) { error = ex.Message; } changed = true;
+            }
+            if (fitting != null && fitting.IsCompleted)
+            {
+                var task = fitting; fitting = null;
+                try
+                {
+                    var extent = task.GetAwaiter().GetResult();
+                    if (extent.Count == 0) throw new InvalidOperationException("No valid numeric samples in this range. Choose explicit limits or another column.");
+                    minimum = extent.Minimum; maximum = extent.Maximum;
+                    if (maximum == minimum) { double pad = Math.Max(1, Math.Abs(minimum) * 1e-6); minimum -= pad; maximum += pad; }
+                    fitOnOpen = false; BeginBuild();
+                }
+                catch (Exception ex) { error = ex.Message; } changed = true;
+            }
+            if (building != null && building.IsCompleted)
+            {
+                var task = building; building = null;
+                try { result = task.GetAwaiter().GetResult(); fitOnOpen = false; }
+                catch (Exception ex) { error = ex.Message; } changed = true;
+            }
+            if (changed) Repaint();
+        }
+        private void OnGUI()
+        {
+            GUILayout.Label(columnName + (string.IsNullOrEmpty(derivedId) ? "" : " • Calculated") + (string.IsNullOrEmpty(corrections) ? " • Original snapshot" : " • Effective snapshot"), EditorStyles.boldLabel);
+            if (equationLabel != null) GUILayout.Label(equationLabel, EditorStyles.miniLabel);
+            using (new EditorGUI.DisabledScope(Busy || dataset == null))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                { firstRow = EditorGUILayout.LongField("First row (0-based)", firstRow); endRow = EditorGUILayout.LongField("End row (exclusive)", endRow); }
+                using (new EditorGUILayout.HorizontalScope())
+                { minimum = EditorGUILayout.DoubleField("Minimum", minimum); maximum = EditorGUILayout.DoubleField("Maximum", maximum); }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    bins = EditorGUILayout.IntField("Bins (1–4096)", bins);
+                    invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup("Invalid values", invalidPolicy);
+                }
+                using (new EditorGUILayout.HorizontalScope())
+                { if (GUILayout.Button("Fit limits / build")) BeginFit(); if (GUILayout.Button("Apply / build")) BeginBuild(); }
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                density = GUILayout.Toggle(density, "Density", EditorStyles.toolbarButton); grid = GUILayout.Toggle(grid, "Grid", EditorStyles.toolbarButton);
+                if (Busy) { GUILayout.Label("Reading source in background…", EditorStyles.miniLabel); if (GUILayout.Button("Cancel")) cancellation.Cancel(); }
+            }
+            if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Warning);
+            if (result == null) { EditorGUILayout.HelpBox("Build a histogram to display counts. Source files remain unchanged.", MessageType.Info); return; }
+            GUILayout.Label($"Displayed rows [{result.FirstRow:N0}, {result.EndRow:N0}) • {result.Counts.Count} bins • included {result.IncludedCount:N0} • invalid {result.InvalidCount:N0} • below {result.UnderflowCount:N0} • above {result.OverflowCount:N0}", EditorStyles.miniLabel);
+            Rect area = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
+            try { DrawBars(area); } catch (OverflowException ex) { GUI.Label(area, ex.Message); }
+        }
+        private void DrawBars(Rect area)
+        {
+            EditorGUI.DrawRect(area, new Color(.1f, .1f, .1f));
+            Rect plot = new Rect(area.x + 62, area.y + 20, Math.Max(1, area.width - 76), Math.Max(1, area.height - 48));
+            double peak = 0;
+            for (int i = 0; i < result.Counts.Count; i++) peak = Math.Max(peak, density ? result.Density(i) : result.Counts[i]);
+            if (peak == 0) peak = 1;
+            for (int i = 0; i <= 4; i++)
+            {
+                float y = plot.yMax - plot.height * i / 4;
+                if (grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(.4f, .4f, .4f, .3f));
+                GUI.Label(new Rect(area.x + 3, y - 8, 58, 18), (peak * i / 4).ToString("G4", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+            }
+            float width = plot.width / result.Counts.Count;
+            for (int i = 0; i < result.Counts.Count; i++)
+            {
+                double value = density ? result.Density(i) : result.Counts[i]; float height = (float)(value / peak * plot.height);
+                EditorGUI.DrawRect(new Rect(plot.x + width * i, plot.yMax - height, Math.Max(.5f, width - 1), height), new Color(.15f, .65f, .9f));
+            }
+            GUI.Label(new Rect(plot.x, plot.yMax + 4, plot.width / 2, 20), result.Edges[0].ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+            GUI.Label(new Rect(plot.xMax - 100, plot.yMax + 4, 100, 20), result.Edges[result.Edges.Count - 1].ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+            if (plot.Contains(Event.current.mousePosition))
+            {
+                int bin = Mathf.Clamp((int)((Event.current.mousePosition.x - plot.x) / width), 0, result.Counts.Count - 1);
+                GUI.Label(new Rect(plot.x + 4, area.y, plot.width - 8, 20), $"Bin {bin + 1}: [{result.Edges[bin]:G6}, {result.Edges[bin + 1]:G6}{(bin == result.Counts.Count - 1 ? "]" : ")")} • {result.Counts[bin]:N0} samples", EditorStyles.miniLabel);
+                if (Event.current.type == EventType.MouseMove) Repaint();
+            }
+        }
+    }
+}

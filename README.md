@@ -1,6 +1,6 @@
 # FP Utility Analytics
 
-See the proposed [Data Workbench implementation plan](DataWorkbenchPlan.md) for disk-backed sheets, configurable plots and Biologging TDR integration. This is planned work; the existing event/stat features are described below.
+See the [Data Workbench implementation plan](Runtime/Workbench/DataWorkbenchPlan.md) and [initial workbench usage](Runtime/Workbench/README.md) for the separate disk-backed sheet/plot module. The initial slice is available under **FuzzPhyte > Utility > Analytics > Data Workbench**; remaining milestones are tracked in the plan. Existing event/stat features remain unchanged and are described below.
 
 FP Utility Analytics is a lightweight stat collection and calculation package for
 Unity projects. It is designed for simple gameplay, UI, and event analytics where
