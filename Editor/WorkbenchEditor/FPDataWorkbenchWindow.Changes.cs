@@ -23,6 +23,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private string undoApplied;
         private Task<List<FPWorkbenchChangeSet>> changeLoad;
         private Task changeSave;
+        private FPWorkbenchEditorResources.ScanReservation changeMemory;
         private CancellationTokenSource changeCancel;
         private string importBase;
         private void InitializeCorrectionUndo()
@@ -36,7 +37,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             if (editUndo == null || editUndo.Json == undoApplied) return;
             var restored = JsonUtility.FromJson<CorrectionPayload>(editUndo.Json);
-            foreach (var set in restored.Sources) set.Validate();
+            try { foreach (var set in restored.Sources) set.Validate(); ValidateTypedCorrections(restored.Sources); }
+            catch (Exception ex) { error = "Correction Undo/Redo refused under the current schema: " + ex.Message; editUndo.Json = undoApplied; EditorUtility.SetDirty(editUndo); Repaint(); return; }
             corrections = restored.Sources; undoApplied = editUndo.Json; correctionSnapshots.Clear(); RefreshCorrectionViews(); Repaint();
         }
         private FPWorkbenchChangeSnapshot SnapshotFor(string dataset)
@@ -69,12 +71,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             if (next.Count > 64) throw new InvalidOperationException("Too many correction source revisions.");
             foreach (var source in next) source.Validate();
+            ValidateTypedCorrections(next);
             string payload = JsonUtility.ToJson(new CorrectionPayload { Sources = next });
             if (Encoding.UTF8.GetByteCount(payload) > 2 * 1024 * 1024) throw new InvalidOperationException("The first correction slice supports at most 2 MiB of combined correction metadata; indexed larger overlays remain planned.");
             SyncCorrectionUndo(); Undo.IncrementCurrentGroup(); int group = Undo.GetCurrentGroup();
             Undo.RegisterCompleteObjectUndo(editUndo, label); corrections = next;
             SyncCorrectionUndo(); Undo.CollapseUndoOperations(group); Undo.IncrementCurrentGroup();
             correctionSnapshots.Clear(); RefreshCorrectionViews(); status = "Correction metadata updated; original source unchanged."; Repaint();
+        }
+        private void ValidateTypedCorrections(List<FPWorkbenchChangeSet> sets)
+        {
+            foreach (var set in sets) {
+                var source = registeredSources.Find(s => s.DatasetId == set.DatasetId);
+                if (source == null || !source.HasTypedSchema) continue;
+                var data = FindSource(set.DatasetId) ?? throw new InvalidOperationException("Admit the typed source before changing its corrections.");
+                source.TypedSchema.Compile(data).ValidateChanges(set);
+            }
         }
         private List<FPWorkbenchCsvDataset> OpenDatasets()
         { var result = new List<FPWorkbenchCsvDataset>(); foreach (var sheet in sheets) if (sheet.Dataset != null) result.Add(sheet.Dataset); return result; }
@@ -86,6 +98,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (changeSave.IsFaulted) error = changeSave.Exception.GetBaseException().Message;
                 else status = changeSave.IsCanceled ? "Correction export cancelled." : "Correction file exported; original sources unchanged.";
                 changeSave = null; changed = true;
+                changeMemory?.Dispose(); changeMemory = null;
             }
             if (changeLoad != null && changeLoad.IsCompleted)
             {
@@ -106,6 +119,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 catch (Exception ex) { error = ex.Message; }
                 changeLoad = null; changed = true;
+                changeMemory?.Dispose(); changeMemory = null;
             }
             return changed;
         }
@@ -118,18 +132,41 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 {
                     string path = EditorUtility.SaveFilePanel("Export corrections", "", workbookName, "fpchanges");
                     if (!string.IsNullOrEmpty(path)) try
-                    { Cancel(changeCancel); changeCancel = new CancellationTokenSource(); changeSave = FPWorkbenchChangesFile.SaveAsync(corrections, path, OpenDatasets(), changeCancel.Token); }
+                    { BeginChangeFile(path, false); }
                     catch (Exception ex) { error = ex.Message; }
                 }
                 if (GUILayout.Button("Import changes…"))
                 {
                     string path = EditorUtility.OpenFilePanel("Import corrections", "", "fpchanges");
                     if (!string.IsNullOrEmpty(path)) try
-                    { Cancel(changeCancel); changeCancel = new CancellationTokenSource(); importBase = JsonUtility.ToJson(new CorrectionPayload { Sources = corrections }); changeLoad = FPWorkbenchChangesFile.LoadAsync(path, OpenDatasets(), changeCancel.Token); }
+                    { BeginChangeFile(path, true); }
                     catch (Exception ex) { error = ex.Message; }
                 }
             }
             if (changeLoad != null || changeSave != null) if (GUILayout.Button("Cancel correction file operation")) changeCancel.Cancel();
+        }
+        private void BeginChangeFile(string path, bool importing)
+        {
+            if (changeLoad != null || changeSave != null) return;
+            try {
+                var data = OpenDatasets(); long bytes = 32L * 1024 * 1024;
+                if (importing) foreach (var source in data) bytes = Math.Max(bytes, FPWorkbenchEditorResources.SourceBytes(source, 32L * 1024 * 1024));
+                if (!FPWorkbenchEditorResources.TryAcquireScan(bytes, out changeMemory))
+                    throw new InvalidOperationException("Shared correction-file memory/background capacity is busy; retry when current work finishes.");
+                error = null;
+                Cancel(changeCancel); changeCancel = new CancellationTokenSource();
+                if (importing) {
+                    importBase = JsonUtility.ToJson(new CorrectionPayload { Sources = corrections });
+                    changeLoad = FPWorkbenchChangesFile.LoadAsync(path, data, changeCancel.Token);
+                } else changeSave = FPWorkbenchChangesFile.SaveAsync(corrections, path, data, changeCancel.Token);
+            } catch (Exception ex) { changeMemory?.Dispose(); changeMemory = null; error = ex.Message; }
+        }
+        private void CancelChangeFiles()
+        {
+            Cancel(changeCancel); changeCancel = null;
+            if (changeMemory != null) changeMemory.ReleaseAfter((Task)changeLoad ?? changeSave);
+            else { Observe(changeLoad); Observe(changeSave); }
+            changeMemory = null; changeLoad = null; changeSave = null; importBase = null;
         }
         private void SelectCell(Sheet sheet, long row, int column, string original)
         {
@@ -147,6 +184,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (selectedDataset != sheet.Dataset.DatasetId) return;
             GUILayout.Label("Selected cell: row " + (selectedRow + 1) + ", column " + (selectedColumn + 1), EditorStyles.boldLabel);
             EditorGUILayout.LabelField("Source", selectedOriginal.Length > 256 ? selectedOriginal.Substring(0, 256) + "…" : selectedOriginal);
+            if (sheet.TableTypedSchema != null && sheet.TableTypedSchema.TryGetParser(selectedColumn, out var declared))
+                EditorGUILayout.HelpBox("Declared " + declared.Type + ". Values must match its culture and tokens. Use Text input for custom numeric/boolean formats; Missing and Masked remain explicit quality actions.", MessageType.Info);
             editKind = (FPWorkbenchEditKind)EditorGUILayout.EnumPopup("Correction kind", editKind);
             using (new EditorGUI.DisabledScope(editKind == FPWorkbenchEditKind.Masked || editKind == FPWorkbenchEditKind.Missing)) editValue = EditorGUILayout.TextField("Effective value", editValue);
             editReason = EditorGUILayout.TextField("Reason", editReason);

@@ -12,16 +12,24 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string Original { get; }
         public bool Calculated { get; }
         public bool Masked { get; }
+        public FPWorkbenchTypedCell Typed { get; }
         /// <summary>Only meaningful for calculated cells; physical source text is not implicitly typed.</summary>
         public FPWorkbenchFormulaStatus CalculationStatus { get; }
-        internal FPWorkbenchTableValue(string text, string original, bool calculated, bool masked, FPWorkbenchFormulaStatus status)
-        { Text = text; Original = original; Calculated = calculated; Masked = masked; CalculationStatus = status; }
+        internal FPWorkbenchTableValue(string text, string original, bool calculated, bool masked, FPWorkbenchFormulaStatus status, FPWorkbenchTypedCell typed = null)
+        { Text = text; Original = original; Calculated = calculated; Masked = masked; CalculationStatus = status; Typed = typed; }
+    }
+    public sealed class FPWorkbenchTypedCell
+    {
+        public FPWorkbenchTypedValue Original { get; }
+        public FPWorkbenchTypedValue Effective { get; }
+        internal FPWorkbenchTypedCell(FPWorkbenchTypedValue original, FPWorkbenchTypedValue effective) { Original = original; Effective = effective; }
     }
     public sealed class FPWorkbenchTablePage
     {
         public string DatasetId { get; internal set; }
         public string FormulaFingerprint { get; internal set; }
         public string CorrectionFingerprint { get; internal set; }
+        public string TypedSchemaFingerprint { get; internal set; }
         public long FirstRow { get; internal set; }
         public int FirstColumn { get; internal set; }
         /// <summary>Virtual schema ordinals in displayed order. Each entry retains its original source/calculated identity.</summary>
@@ -34,14 +42,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     {
         private readonly FPWorkbenchCsvDataset dataset;
         private readonly FPWorkbenchFormulaProgram program;
+        private readonly FPWorkbenchCompiledSchema typedSchema;
+        public string TypedSchemaFingerprint => typedSchema?.Fingerprint ?? "none";
         public string DatasetId => dataset.DatasetId;
         public long RowCount => dataset.RowCount;
         public int SourceColumnCount => dataset.ColumnCount;
         public int ColumnCount => SourceColumnCount + (program?.ColumnCount ?? 0);
-        public FPWorkbenchTableView(FPWorkbenchCsvDataset source, FPWorkbenchFormulaProgram calculations = null)
+        public FPWorkbenchTableView(FPWorkbenchCsvDataset source, FPWorkbenchFormulaProgram calculations = null, FPWorkbenchCompiledSchema typedSchema = null)
         {
             dataset = source ?? throw new ArgumentNullException(nameof(source)); program = calculations;
             if (program != null && program.DatasetId != source.DatasetId) throw new ArgumentException("Table calculations belong to another source revision.");
+            if (typedSchema != null && typedSchema.DatasetId != source.DatasetId) throw new ArgumentException("Typed table schema belongs to another source revision.");
+            this.typedSchema = typedSchema;
         }
         public bool IsCalculated(int column) { ValidateColumn(column); return column >= SourceColumnCount; }
         public string ColumnId(int column) => IsCalculated(column) ? DatasetId + ":derived:" + program.ColumnId(column - SourceColumnCount) : new FPWorkbenchCell(DatasetId, 0, column).ColumnId;
@@ -88,9 +100,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                         { var number = evaluator.Derived(column - SourceColumnCount); cell = new FPWorkbenchTableValue(number.ToString(), null, true, false, number.Status); }
                         else
                         {
-                            string original = record[column], text = original; bool masked = false;
-                            if (changes != null && changes.TryGet(dataset.Cell(firstRow + r, column), original, out string effective, out masked)) text = effective;
-                            cell = new FPWorkbenchTableValue(text, original, false, masked, FPWorkbenchFormulaStatus.Valid);
+                            string original = record[column], text = original; bool masked = false, explicitMissing = false;
+                            if (changes != null && changes.TryGet(dataset.Cell(firstRow + r, column), original, out string effective, out masked, out var kind))
+                            { text = effective; explicitMissing = kind == FPWorkbenchEditKind.Missing; }
+                            FPWorkbenchTypedCell typed = null;
+                            if (typedSchema != null && typedSchema.TryGetParser(column, out var columnParser))
+                                typed = new FPWorkbenchTypedCell(columnParser.Parse(original), explicitMissing
+                                    ? new FPWorkbenchTypedValue(text, columnParser.Type, FPWorkbenchValueState.Missing, false)
+                                    : columnParser.Parse(masked ? original : text, masked));
+                            cell = new FPWorkbenchTableValue(text, original, false, masked, FPWorkbenchFormulaStatus.Valid, typed);
                         }
                         characters += cell.Text.Length;
                         if (cell.Original != null && !ReferenceEquals(cell.Text, cell.Original)) characters += cell.Original.Length;
@@ -99,7 +117,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     }
                 }
                 cancellation.ThrowIfCancellationRequested(); dataset.ValidateUnchanged();
-                return new FPWorkbenchTablePage { DatasetId = DatasetId, FormulaFingerprint = program?.Fingerprint ?? "none",
+                return new FPWorkbenchTablePage { DatasetId = DatasetId, FormulaFingerprint = program?.Fingerprint ?? "none", TypedSchemaFingerprint = TypedSchemaFingerprint,
                     CorrectionFingerprint = changes?.Fingerprint ?? "original", FirstRow = firstRow, FirstColumn = columns[0], Columns = (int[])columns.Clone(), Values = values, CharacterCount = characters };
             }, cancellation);
         }

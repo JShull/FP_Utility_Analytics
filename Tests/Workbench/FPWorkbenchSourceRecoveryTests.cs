@@ -19,6 +19,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 var doc = new FPWorkbenchDocument(); doc.Sheets.Add(new FPWorkbenchSheetDocument { DatasetId = data.DatasetId, SourcePath = raw, CacheDirectory = data.CacheDirectory,
                     FirstRow = 1, Binding = new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, YColumn = 1 } });
                 doc.Sheets[0].Plot.StartX = .2; doc.Sheets[0].Plot.EndX = .7;
+                doc.Validate(); doc.Sources[0].HasTypedSchema = true;
+                doc.Sources[0].TypedSchema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                    new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Real, MissingTokens = new[] { "---" } } } };
+                string typedFingerprint = doc.Sources[0].TypedSchema.Compile(data).Fingerprint;
                 var changes = new FPWorkbenchChangeSet { DatasetId = data.DatasetId }; changes.Set(data.Cell(0, 1), "5", "6", FPWorkbenchEditKind.Number, "test"); doc.Changes.Add(changes);
                 doc.Figures.Add(new FPWorkbenchFigureDocument { DatasetId = data.DatasetId, YColumns = new[] { 1 }, Colors = new[] { Color.cyan },
                     HasCorrectionSnapshot = true, CorrectionSnapshot = JsonUtility.FromJson<FPWorkbenchChangeSet>(JsonUtility.ToJson(changes)) });
@@ -33,6 +37,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 string output = Path.Combine(root, "recovered.fpworkbook"); await FPWorkbenchDocumentFile.SaveAsync(repaired, output);
                 var loaded = await FPWorkbenchDocumentFile.LoadAsync(output);
                 Assert.That(loaded.Datasets[0].DatasetId, Is.EqualTo(data.DatasetId)); Assert.That(loaded.Document.Figures[0].Id, Is.EqualTo(doc.Figures[0].Id));
+                Assert.That(loaded.Document.Sources[0].TypedSchema.Compile(loaded.Datasets[0]).Fingerprint, Is.EqualTo(typedFingerprint));
                 Assert.That(JsonUtility.ToJson(loaded.Document.Changes[0]), Is.EqualTo(JsonUtility.ToJson(changes)));
                 Assert.That(File.ReadAllBytes(moved), Is.EqualTo(original)); Assert.That(File.ReadAllBytes(path), Is.EqualTo(saved));
             } finally { Directory.Delete(root, true); }

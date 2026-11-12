@@ -30,7 +30,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (existing.Session.DatasetId == dataset.DatasetId) return existing;
                 existing.Dispose(); throw new InvalidOperationException("Figure identity is already bound to a different source revision.");
             }
-            var session = new FPWorkbenchFigureSession(dataset, binding, settings, changes, calculations);
+            var session = new FPWorkbenchFigureSession(dataset, binding, settings, changes, calculations, FPWorkbenchEditorResources.Memory, FPWorkbenchEditorResources.Scans);
             figures[id] = new WeakReference<FPWorkbenchFigureSession>(session); return session.Retain();
         }
     }

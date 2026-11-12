@@ -8,6 +8,35 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
     using UnityEngine;
     public sealed class FPWorkbenchColumnProjectionTests
     {
+        [Test] public void FrozenViewportUsesStableVisibleIdentitiesWithoutDuplicatesAcrossSchemaChanges()
+        {
+            string[] schema = { "id", "time", "a", "b", "c" };
+            var p = new FPWorkbenchColumnProjection(); p.BindSchema(schema);
+            p.SetFrozen("time", true); p.SetFrozen("id", true);
+            Assert.That(p.ResolveWindow(schema, 0, 4), Is.EqualTo(new[] { 0, 1, 2, 3 }));
+            Assert.That(p.ResolveWindow(schema, 2, 4), Is.EqualTo(new[] { 0, 1, 4 }));
+            p.Move("time", 0);
+            Assert.That(p.ResolveWindow(schema, 1, 3), Is.EqualTo(new[] { 1, 0, 3 }));
+            var saved = JsonUtility.FromJson<FPWorkbenchColumnProjection>(JsonUtility.ToJson(p));
+            string[] changed = { "c", "id", "time", "new" }; saved.BindSchema(changed);
+            Assert.That(saved.ResolveWindow(changed, 1, 3), Is.EqualTo(new[] { 2, 1, 3 }));
+            saved.SetHidden("id", true); Assert.That(saved.Frozen, Is.EqualTo(new[] { "time" }));
+            Assert.Throws<ArgumentException>(() => saved.SetFrozen("id", true));
+            saved.BindSchema(new[] { "id", "new" }); Assert.That(saved.Frozen, Is.Empty);
+            Assert.Throws<ArgumentOutOfRangeException>(() => p.ResolveWindow(schema, 3, 4));
+            Assert.Throws<ArgumentException>(() => p.ResolveWindow(schema, 0, 2));
+            Assert.Throws<InvalidDataException>(() => new FPWorkbenchColumnProjection { Order = schema, Frozen = new[] { "foreign" } }.Validate());
+            Assert.Throws<InvalidDataException>(() => new FPWorkbenchColumnProjection { Order = schema, Frozen = new[] { "id", "id" } }.Validate());
+            var all = new FPWorkbenchColumnProjection(); all.BindSchema(new[] { "id" }); all.SetFrozen("id", true);
+            Assert.That(all.ResolveWindow(new[] { "id" }, 0, 1), Is.EqualTo(new[] { 0 }));
+            var legacy = JsonUtility.FromJson<FPWorkbenchColumnProjection>("{\"Version\":1,\"Order\":[\"id\"],\"Hidden\":[]}");
+            Assert.That(legacy.Frozen, Is.Empty); legacy.Validate();
+            var bounded = new FPWorkbenchColumnProjection(); string[] many = new string[9];
+            for (int c = 0; c < many.Length; c++) many[c] = "c" + c;
+            bounded.BindSchema(many); for (int c = 0; c < 8; c++) bounded.SetFrozen(many[c], true);
+            Assert.Throws<InvalidOperationException>(() => bounded.SetFrozen(many[8], true));
+            Assert.That(bounded.Frozen.Length, Is.EqualTo(8));
+        }
         [Test] public void ProjectionRetainsStableIdentitiesAcrossDefinitionReorderAndRejectsInvalidMetadata()
         {
             var widths = new FPWorkbenchColumnLayout(); widths.EnsureColumns(6); widths.ManualWidths[5] = 300;
@@ -38,7 +67,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 definitions.Columns.Add(new FPWorkbenchDerivedColumn { Name = "Sum", Expression = "C1 + C3" });
                 var program = FPWorkbenchFormulaProgram.Compile(data, definitions); var table = new FPWorkbenchTableView(data, program);
                 var changes = new FPWorkbenchChangeSet { DatasetId = data.DatasetId }; changes.Set(data.Cell(0, 2), "3", "9", FPWorkbenchEditKind.Number, "fixture");
-                var selected = new[] { 3, 2, 0 }; var task = table.ReadProjectedPageAsync(0, 2, selected, changes.Snapshot()); selected[0] = 1;
+                var projection = new FPWorkbenchColumnProjection();
+                var identities = new string[table.ColumnCount]; for (int c = 0; c < identities.Length; c++) identities[c] = table.ColumnId(c);
+                projection.BindSchema(identities); projection.SetFrozen(identities[3], true); projection.SetHidden(identities[1], true); projection.Move(identities[2], 0);
+                var selected = projection.ResolveWindow(identities, 0, 3);
+                var task = table.ReadProjectedPageAsync(0, 2, selected, changes.Snapshot()); selected[0] = 1;
                 var page = await task;
                 Assert.That(page.Columns, Is.EqualTo(new[] { 3, 2, 0 })); Assert.That(page.Values[0][0].Calculated, Is.True);
                 Assert.That(page.Values[0][0].Text, Is.EqualTo("10")); Assert.That(page.Values[0][1].Text, Is.EqualTo("9"));

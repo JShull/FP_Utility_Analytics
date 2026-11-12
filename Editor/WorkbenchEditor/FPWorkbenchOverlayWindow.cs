@@ -9,7 +9,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     using UnityEngine;
 
     /// <summary>Shared-source multi-series snapshot viewer; all visible series publish together.</summary>
-    public sealed class FPWorkbenchOverlayWindow : EditorWindow
+    public sealed partial class FPWorkbenchOverlayWindow : EditorWindow
     {
         private FPWorkbenchPresentationUndo presentationUndo;
         private static readonly string[] AxisChoices = { "Left Y", "Right Y" };
@@ -34,14 +34,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private string[] names, yNames;
         private FPWorkbenchFormulaProgram program;
         private Task<FPWorkbenchCsvDataset> opening;
+        [SerializeField] private FPWorkbenchCsvProfile sourceProfile;
+        private bool pendingOpening;
+        private FPWorkbenchEditorResources.ScanReservation openingMemory;
         private Task<FPWorkbenchOverlay> building;
+        private Func<Task<FPWorkbenchOverlay>> pendingBuild;
+        private FPWorkbenchEditorResources.ScanReservation buildMemory;
         private Task<FPWorkbenchOverlayView> querying;
+        private FPWorkbenchMemoryBudget.Reservation queryMemory, viewMemory;
+        private bool windowActive, waitingForMemory;
+        private const long QueryReservationBytes = 8L * 1024 * 1024;
         private FPWorkbenchOverlay overlay;
         private FPWorkbenchOverlayView view;
         private CancellationTokenSource lifetime, queryCancellation;
         private double requestedStart, requestedEnd;
         private string error;
-        private bool Busy => opening != null || building != null || querying != null;
+        private bool Busy => opening != null || pendingOpening || building != null || pendingBuild != null || querying != null || waitingForMemory;
         public static FPWorkbenchOverlayWindow Open(string workbookId, FPWorkbenchCsvDataset source, FPWorkbenchSeriesBinding commonX, int yColumn, FPWorkbenchChangeSnapshot changes = null, FPWorkbenchFormulaProgram calculationProgram = null, string derivedId = null)
         {
             if (source == null || commonX == null || yColumn < 0 || yColumn >= source.ColumnCount || changes != null && changes.DatasetId != source.DatasetId) throw new ArgumentException("Invalid overlay source/binding.");
@@ -60,18 +68,27 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private static Color SeriesColor(int column) => Color.HSVToRGB((column * .618034f) % 1, .65f, .95f);
         private void OnEnable()
         {
+            windowActive = true;
             minSize = new Vector2(600, 420); lifetime = new CancellationTokenSource(); EditorApplication.update += Tick;
-            if (!string.IsNullOrEmpty(cache)) opening = FPWorkbenchCsvDataset.OpenAsync(cache, lifetime.Token);
+            pendingOpening = !string.IsNullOrEmpty(cache);
         }
         private void OnDisable()
         {
+            windowActive = false;
+            imageJob?.Dispose(); imageJob = null;
             axisAssignmentUndo?.Dispose(); axisAssignmentUndo = null;
             rightPresentationUndo?.Dispose(); rightPresentationUndo = null;
             presentationUndo?.Dispose(); presentationUndo = null;
-            if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure());
+            try { if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure()); }
+            catch (Exception ex) { error = ex.Message; }
             EditorApplication.update -= Tick; lifetime?.Cancel(); lifetime?.Dispose(); lifetime = null;
             queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null;
-            Observe(opening); Observe(building); Observe(querying); opening = null; building = null; querying = null; overlay = null; view = null;
+            if (openingMemory != null) openingMemory.ReleaseAfter(opening); else Observe(opening);
+            openingMemory = null; pendingOpening = false;
+            if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
+            buildMemory = null; pendingBuild = null;
+            if (queryMemory != null) queryMemory.ReleaseAfter(querying); else Observe(querying);
+            queryMemory = null; opening = null; building = null; querying = null; overlay = null; ClearView(); waitingForMemory = false;
         }
         internal FPWorkbenchFigureDocument DescribeFigure() => new FPWorkbenchFigureDocument
         {
@@ -103,6 +120,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void Attach(FPWorkbenchCsvDataset source)
         {
+            sourceProfile = source.ImportProfile;
             if (source.DatasetId != datasetId || columns == null || columns.Count < 1 || columns.Count > 8 || colors == null || colors.Length != columns.Count) throw new InvalidOperationException("Overlay source or saved series metadata changed.");
             program = string.IsNullOrEmpty(calculations) ? null : FPWorkbenchFormulaProgram.Compile(source, JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations));
             binding.ResolveDerivedX(program);
@@ -124,7 +142,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void BeginBuild()
         {
             if (Busy || dataset == null) return;
-            try { var next = binding.Copy(dataset.ColumnCount); next.YDerivedId = ""; error = null; view = null; overlay = null; building = FPWorkbenchOverlay.BuildAsync(dataset, next, PhysicalColumns(), snapshot, lifetime.Token, program, derivedColumns.ToArray()); appliedBinding = next; }
+            try {
+                var next = binding.Copy(dataset.ColumnCount); next.YDerivedId = "";
+                var selected = PhysicalColumns(); var derived = derivedColumns.ToArray(); var source = dataset;
+                var formulas = program; var edits = snapshot; var token = lifetime.Token;
+                error = null; ClearView(); overlay = null;
+                pendingBuild = () => FPWorkbenchOverlay.BuildAsync(source, next, selected, edits, token, formulas, derived);
+                appliedBinding = next;
+                waitingForMemory = !FPWorkbenchEditorResources.TryStartSource(dataset, ref pendingBuild, ref building, ref buildMemory);
+            }
             catch (Exception ex) { error = ex.Message; }
         }
         private bool AddColumn(string sourceWorkbook, string sourceDataset, string columnId, int column)
@@ -152,15 +178,28 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 columns.Count < 8 && ResolveDerivedColumn(columnId, derived) >= 0 && !derivedColumns.Contains(derived);
         private void Tick()
         {
+            if (!windowActive) return;
             bool repaint = false;
+            if (pendingOpening) {
+                try { pendingOpening = !FPWorkbenchEditorResources.TryOpenCache(cache, sourceProfile, lifetime.Token, ref opening, ref openingMemory); waitingForMemory = pendingOpening; }
+                catch (Exception ex) { pendingOpening = false; waitingForMemory = false; error = ex.Message; }
+                repaint = true;
+            }
+            if (pendingBuild != null) {
+                try { waitingForMemory = !FPWorkbenchEditorResources.TryStartSource(dataset, ref pendingBuild, ref building, ref buildMemory); }
+                catch (Exception ex) { waitingForMemory = false; error = ex.Message; }
+                repaint = true;
+            }
             if (opening != null && opening.IsCompleted)
             {
                 var task = opening; opening = null;
+                openingMemory?.Dispose(); openingMemory = null;
                 try { Attach(task.GetAwaiter().GetResult()); BeginBuild(); } catch (Exception ex) { error = ex.Message; } repaint = true;
             }
             if (building != null && building.IsCompleted)
             {
                 var task = building; building = null;
+                buildMemory?.Dispose(); buildMemory = null;
                 try { overlay = task.GetAwaiter().GetResult(); if (!settings.HasRange) settings.Fit(overlay.FirstX, overlay.LastX); }
                 catch (Exception ex) { error = ex.Message; } repaint = true;
             }
@@ -170,28 +209,38 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 try
                 {
                     var candidate = task.GetAwaiter().GetResult();
-                    if (requestedStart == settings.StartX && requestedEnd == settings.EndX) { view = candidate; error = null; }
+                    if (requestedStart == settings.StartX && requestedEnd == settings.EndX) {
+                        ClearView(); view = candidate; viewMemory = queryMemory; queryMemory = null;
+                        long retained = 4096; foreach (var series in view.Series) retained = checked(retained + 512 + series.Bins.Length * 128L);
+                        viewMemory.Complete(retained); error = null;
+                    }
                 }
                 catch (OperationCanceledException) { }
-                catch (Exception ex) { error = ex.Message; } repaint = true;
+                catch (Exception ex) { error = ex.Message; }
+                queryMemory?.Dispose(); queryMemory = null; repaint = true;
             }
             if (querying != null && (settings.StartX != requestedStart || settings.EndX != requestedEnd)) queryCancellation.Cancel();
             if (overlay != null && querying == null && (view == null || view.StartX != settings.StartX || view.EndX != settings.EndX) &&
                 (error == null || settings.StartX != requestedStart || settings.EndX != requestedEnd))
             {
-                queryCancellation?.Dispose(); queryCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-                requestedStart = settings.StartX; requestedEnd = settings.EndX;
-                try { querying = overlay.QueryAsync(requestedStart, requestedEnd, 512, queryCancellation.Token); }
-                catch (Exception ex) { error = ex.Message; }
-                repaint = true;
+                bool admitted = FPWorkbenchEditorResources.Memory.TryAcquire(QueryReservationBytes, out queryMemory);
+                if (waitingForMemory != !admitted) { waitingForMemory = !admitted; repaint = true; }
+                if (admitted) {
+                    queryCancellation?.Dispose(); queryCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                    requestedStart = settings.StartX; requestedEnd = settings.EndX;
+                    try { querying = overlay.QueryAsync(requestedStart, requestedEnd, 512, queryCancellation.Token); }
+                    catch (Exception ex) { queryMemory.Dispose(); queryMemory = null; error = ex.Message; }
+                    repaint = true;
+                }
             }
             if (repaint) Repaint();
         }
+        private void ClearView() { view = null; viewMemory?.Dispose(); viewMemory = null; }
         private void OnGUI()
         {
             GUILayout.Label("Shared-source overlay • " + (snapshot == null ? "Original snapshot" : "Effective snapshot"), EditorStyles.boldLabel);
             if (program != null && program.ColumnCount > 0) GUILayout.Label("Calculated series use the frozen formula snapshot.", EditorStyles.miniLabel);
-            if (dataset == null) { EditorGUILayout.HelpBox(error ?? "Verifying source…", MessageType.Info); return; }
+            if (dataset == null) { EditorGUILayout.HelpBox(error ?? (pendingOpening ? "Waiting for shared memory/background capacity…" : "Verifying source…"), MessageType.Info); return; }
             using (new EditorGUI.DisabledScope(Busy))
             {
                 using (new EditorGUILayout.HorizontalScope())
@@ -258,10 +307,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (settings.LockY)
             { using (new EditorGUILayout.HorizontalScope()) { settings.MinimumY = EditorGUILayout.DoubleField("Y minimum", settings.MinimumY); settings.MaximumY = EditorGUILayout.DoubleField("Y maximum", settings.MaximumY); } }
             presentationUndo.End();
+            DrawImageExport();
             if (Array.Exists(axes.Right, side => side))
             {
                 rightPresentationUndo ??= new FPWorkbenchPresentationUndo(Repaint); rightPresentationUndo.Begin(axes.RightSettings);
                 var right = axes.RightSettings;
+                if (showFigureSettings) FPWorkbenchPlotPresetGUI.Draw(right, true);
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     GUILayout.Label("Right Y", GUILayout.Width(55)); bool locked = right.LockY;
@@ -275,7 +326,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (right.LockY) { right.MinimumY = EditorGUILayout.DoubleField("Right minimum", right.MinimumY); right.MaximumY = EditorGUILayout.DoubleField("Right maximum", right.MaximumY); }
                 rightPresentationUndo.End();
             }
-            if (Busy) GUILayout.Label("Updating all series in background…", EditorStyles.miniLabel);
+            if (waitingForMemory) GUILayout.Label("Waiting for shared view memory/read capacity…", EditorStyles.miniLabel);
+            else if (Busy) GUILayout.Label("Updating all series in background…", EditorStyles.miniLabel);
             if (error != null) EditorGUILayout.HelpBox(error, MessageType.Warning);
             Rect plot = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
             FPWorkbenchPlotView.Draw(plot, view?.Series[0], settings, "Shared X • source units unchanged", view, colors, axes);

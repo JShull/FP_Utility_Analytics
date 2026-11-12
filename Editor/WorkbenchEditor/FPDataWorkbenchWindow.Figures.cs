@@ -83,7 +83,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             savedFigures ??= new List<FPWorkbenchFigureDocument>();
             showSavedFigures = EditorGUILayout.Foldout(showSavedFigures, "Saved figures • " + savedFigures.Count, true);
-            if (sourceOpening != null && GUILayout.Button("Cancel figure source verification")) CancelSourceOpening();
+            if ((sourceOpening != null || pendingSourceOpening != null) && GUILayout.Button("Cancel figure source verification")) CancelSourceOpening();
             if (!showSavedFigures) return;
             for (int i = 0; i < savedFigures.Count; i++)
             {

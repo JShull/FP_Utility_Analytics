@@ -7,7 +7,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     using UnityEditor;
     using UnityEngine;
 
-    public sealed class FPWorkbenchFigureWindow : EditorWindow
+    public sealed partial class FPWorkbenchFigureWindow : EditorWindow
     {
         private FPWorkbenchPresentationUndo presentationUndo;
         [SerializeField] private bool showFigureSettings;
@@ -16,9 +16,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private FPWorkbenchSheetDocument document;
         private FPWorkbenchFigureSession.Lease lease;
         private Task<FPWorkbenchCsvDataset> opening;
+        private bool pendingOpening;
+        private FPWorkbenchEditorResources.ScanReservation openingMemory;
         private CancellationTokenSource cancellation;
         private string error;
         private long lastRevision = -1;
+        private bool windowActive;
         public static FPWorkbenchFigureWindow Open(string id, FPWorkbenchSheetDocument document, FPWorkbenchCsvDataset dataset, FPWorkbenchFormulaProgram program = null)
         {
             var window = CreateInstance<FPWorkbenchFigureWindow>(); window.figureId = id;
@@ -29,6 +32,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnEnable()
         {
+            windowActive = true;
             minSize = new Vector2(420, 260);
             EditorApplication.update += Tick; AssemblyReloadEvents.beforeAssemblyReload += Capture;
             if (string.IsNullOrEmpty(figureId) || string.IsNullOrEmpty(metadata)) return;
@@ -37,16 +41,20 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 document = JsonUtility.FromJson<FPWorkbenchSheetDocument>(metadata);
                 lease = FPWorkbenchFigureRegistry.TryRetain(figureId);
                 if (lease == null)
-                { cancellation = new CancellationTokenSource(); opening = FPWorkbenchCsvDataset.OpenAsync(document.CacheDirectory, cancellation.Token); }
+                { cancellation = new CancellationTokenSource(); pendingOpening = true; }
             }
             catch (Exception ex) { error = ex.Message; }
         }
         private void OnDisable()
         {
+            windowActive = false;
+            imageJob?.Dispose(); imageJob = null;
             presentationUndo?.Dispose(); presentationUndo = null;
             Capture(); EditorApplication.update -= Tick; AssemblyReloadEvents.beforeAssemblyReload -= Capture;
             cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
-            if (opening != null) opening.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+            if (openingMemory != null) openingMemory.ReleaseAfter(opening);
+            else if (opening != null) opening.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+            openingMemory = null; pendingOpening = false; opening = null;
             lease?.Dispose(); lease = null;
         }
         private void Capture()
@@ -59,8 +67,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void Tick()
         {
+            if (!windowActive) return;
+            if (pendingOpening) {
+                try { pendingOpening = !FPWorkbenchEditorResources.TryOpenCache(document.CacheDirectory, document.Import, cancellation.Token, ref opening, ref openingMemory); }
+                catch (Exception ex) { pendingOpening = false; error = ex.Message; }
+                Repaint();
+            }
             if (opening != null && opening.IsCompleted)
             {
+                openingMemory?.Dispose(); openingMemory = null;
                 if (opening.Status == TaskStatus.RanToCompletion)
                 {
                     if (opening.Result.DatasetId == document.DatasetId)
@@ -86,7 +101,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void OnGUI()
         {
             if (!string.IsNullOrEmpty(error)) { EditorGUILayout.HelpBox(error, MessageType.Error); return; }
-            if (lease == null) { EditorGUILayout.HelpBox("Verifying figure source…", MessageType.Info); return; }
+            if (lease == null) { EditorGUILayout.HelpBox(pendingOpening ? "Waiting for shared memory/background capacity…" : "Verifying figure source…", MessageType.Info); return; }
             var session = lease.Session;
             presentationUndo ??= new FPWorkbenchPresentationUndo(Repaint);
             presentationUndo.Begin(session.Settings);
@@ -108,10 +123,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 session.Settings.YTickSpacing = EditorGUILayout.DoubleField("Y grid spacing", session.Settings.YTickSpacing);
             }
             presentationUndo.End();
+            DrawImageExport(session);
             if (session.Error != null) EditorGUILayout.HelpBox(session.Error.Message, MessageType.Error);
             Rect plot = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
             FPWorkbenchPlotView.Draw(plot, session.View, session.Settings, (session.ChangeSnapshot == null ? "Original • " : "Effective • ") + session.YName);
-            if (session.IsBusy) GUI.Label(new Rect(plot.x + 80, plot.y + 20, plot.width - 90, 20), "Updating cached view…", EditorStyles.miniLabel);
+            if (session.IsBusy) GUI.Label(new Rect(plot.x + 80, plot.y + 20, plot.width - 90, 20), session.WaitingForMemory ? "Waiting for shared memory/background capacity…" : "Updating cached view…", EditorStyles.miniLabel);
         }
     }
 }

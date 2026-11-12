@@ -10,6 +10,23 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchPointCacheTests
     {
+        [Test] public async Task PhysicalPointCachesSeparateTypedInterpretations()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPTypedSpatial-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+            try {
+                string path = Path.Combine(root, "source.csv"); File.WriteAllText(path, "x,y\n1,2\n3,4\n");
+                var data = await FPWorkbenchCsvDataset.ImportAsync(path, Path.Combine(root, "cache"), new FPWorkbenchCsvProfile());
+                var original = await FPWorkbenchPointCache.BuildAsync(data, new[] { 0, 1 });
+                var schema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                    new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Text } } };
+                var program = FPWorkbenchFormulaProgram.Compile(data, new FPWorkbenchFormulaSet { DatasetId = data.DatasetId }, schema.Compile(data));
+                var typed = await FPWorkbenchPointCache.BuildAsync(data, new[] { 0, 1 }, program, invalidPolicy: FPWorkbenchInvalidPolicy.Skip);
+                Assert.That(typed.DirectoryPath, Is.Not.EqualTo(original.DirectoryPath));
+                Assert.That(typed.ValidCount, Is.Zero); Assert.That(original.ValidCount, Is.EqualTo(2));
+                Assert.That(typed.FormulaFingerprint, Is.EqualTo(program.Fingerprint));
+            }
+            finally { Directory.Delete(root, true); }
+        }
         [Test] public async Task UnsortedCoordinatesRetainRowsSkipBlocksAndDecimateDeterministically()
         {
             string root = Path.Combine(Path.GetTempPath(), "FPSpatial-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);

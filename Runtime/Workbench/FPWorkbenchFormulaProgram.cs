@@ -29,6 +29,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string DatasetId;
         public List<FPWorkbenchDerivedColumn> Columns = new List<FPWorkbenchDerivedColumn>();
         public List<FPWorkbenchSourceUnit> SourceUnits = new List<FPWorkbenchSourceUnit>();
+        public bool HasTypedSchema;
+        public FPWorkbenchTypedSchema TypedSchema;
     }
     public enum FPWorkbenchFormulaStatus { Valid, Missing, NonNumeric, DivideByZero, NonFinite, IntegerPrecision }
     public readonly struct FPWorkbenchFormulaValue
@@ -44,6 +46,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     {
         private readonly FPWorkbenchFormulaSet definition;
         private readonly int sourceColumns;
+        private readonly FPWorkbenchCompiledSchema typedSchema;
+        public string TypedSchemaFingerprint => typedSchema?.Fingerprint ?? "none";
         private readonly Dictionary<string, int> derived = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly FPWorkbenchFormulaUnits[] sourceUnits, resultUnits;
         private readonly Node[] roots;
@@ -89,6 +93,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (dataset == null || formulas == null) throw new ArgumentNullException();
             return new FPWorkbenchFormulaProgram(dataset.DatasetId, dataset.ColumnCount, formulas);
         }
+        public static FPWorkbenchFormulaProgram Compile(FPWorkbenchCsvDataset dataset, FPWorkbenchFormulaSet formulas, FPWorkbenchCompiledSchema schema)
+        {
+            if (dataset == null || formulas == null || schema == null) throw new ArgumentNullException();
+            if (schema.DatasetId != dataset.DatasetId || schema.SourceColumnCount != dataset.ColumnCount) throw new ArgumentException("Formula typed schema source differs.");
+            var snapshot = JsonUtility.FromJson<FPWorkbenchFormulaSet>(JsonUtility.ToJson(formulas));
+            snapshot.HasTypedSchema = true; snapshot.TypedSchema = schema.Definition;
+            return Compile(dataset, snapshot);
+        }
         public static FPWorkbenchFormulaProgram CompileSchema(string datasetId, int maximumColumns, FPWorkbenchFormulaSet formulas)
         {
             if (string.IsNullOrEmpty(datasetId) || datasetId.Length > 256 || maximumColumns < 1 || maximumColumns > 4096 || formulas == null) throw new ArgumentException("Invalid bounded formula schema.");
@@ -96,8 +108,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         }
         private FPWorkbenchFormulaProgram(string datasetId, int count, FPWorkbenchFormulaSet formulas)
         {
+            // JsonUtility can materialize a default object for a null serializable field.
+            if (formulas.HasTypedSchema && formulas.TypedSchema == null) throw new ArgumentException("Formula typed schema snapshot is missing.");
             definition = JsonUtility.FromJson<FPWorkbenchFormulaSet>(JsonUtility.ToJson(formulas)); sourceColumns = count;
             if (definition.Version != 1 || definition.DatasetId != datasetId || definition.Columns == null || definition.Columns.Count > 64 || definition.SourceUnits == null || definition.SourceUnits.Count > count) throw new ArgumentException("Invalid formula source/version or definition bounds.");
+            if (definition.HasTypedSchema) {
+                if (definition.TypedSchema == null) throw new ArgumentException("Formula typed schema snapshot is missing.");
+                typedSchema = definition.TypedSchema.CompileBounded(datasetId, count); definition.TypedSchema = typedSchema.Definition;
+            }
+            else {
+                if (definition.TypedSchema != null && !string.IsNullOrEmpty(definition.TypedSchema.DatasetId)) throw new ArgumentException("Formula typed schema presence marker contradicts its snapshot.");
+                definition.TypedSchema = null;
+            }
             roots = new Node[definition.Columns.Count]; resultUnits = new FPWorkbenchFormulaUnits[roots.Length]; sourceUnits = new FPWorkbenchFormulaUnits[count];
             for (int i = 0; i < count; i++) sourceUnits[i] = FPWorkbenchFormulaUnits.Parse("");
             var unitColumns = new HashSet<int>();
@@ -105,6 +127,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             {
                 if (unit == null || unit.Column < 0 || unit.Column >= count || !unitColumns.Add(unit.Column)) throw new ArgumentException("Invalid/duplicate source unit declaration.");
                 sourceUnits[unit.Column] = FPWorkbenchFormulaUnits.Parse(unit.Units);
+            }
+            if (typedSchema != null) foreach (var column in definition.TypedSchema.Columns) {
+                var units = FPWorkbenchFormulaUnits.Parse(column.Units);
+                if (units.Known && sourceUnits[column.Column].Known && !units.Equivalent(sourceUnits[column.Column])) throw new ArgumentException("Typed and formula source unit declarations differ.");
+                if (units.Known) sourceUnits[column.Column] = units;
             }
             for (int i = 0; i < roots.Length; i++)
             {
@@ -155,13 +182,31 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 if (row == null) throw new InvalidOperationException("Set an input row first.");
                 if (sourceReady[column]) return sourceValues[column];
                 string value = row[column];
-                if (changes != null && changes.TryGet(new FPWorkbenchCell(program.DatasetId, rowIndex, column), value, out string effective, out _)) value = effective;
+                bool qualityMissing = false;
+                if (changes != null && changes.TryGet(new FPWorkbenchCell(program.DatasetId, rowIndex, column), value, out string effective, out bool masked, out var kind))
+                { value = effective; qualityMissing = masked || kind == FPWorkbenchEditKind.Missing; }
                 FPWorkbenchFormulaValue result;
-                if (string.IsNullOrWhiteSpace(value)) result = new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.Missing);
+                if (qualityMissing) result = new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.Missing);
+                else if (program.typedSchema != null && program.typedSchema.TryGetParser(column, out var typedParser)) result = ReadTyped(typedParser.Parse(value));
+                else if (string.IsNullOrWhiteSpace(value)) result = new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.Missing);
                 else if (InexactInteger(value)) result = new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.IntegerPrecision);
                 else if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double number)) result = new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.NonNumeric);
                 else result = FPWorkbenchSeriesBinding.Finite(number) ? new FPWorkbenchFormulaValue(number) : new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.NonFinite);
                 sourceReady[column] = true; return sourceValues[column] = result;
+            }
+            private static FPWorkbenchFormulaValue ReadTyped(FPWorkbenchTypedValue value)
+            {
+                if (value.State == FPWorkbenchValueState.Missing || value.State == FPWorkbenchValueState.Masked) return new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.Missing);
+                if (value.State != FPWorkbenchValueState.Valid) return new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.NonNumeric);
+                switch (value.Type) {
+                    case FPWorkbenchColumnType.Real: return new FPWorkbenchFormulaValue(value.RealNumber);
+                    case FPWorkbenchColumnType.SignedInteger:
+                        return value.SignedInteger < -9007199254740992L || value.SignedInteger > 9007199254740992L
+                            ? new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.IntegerPrecision) : new FPWorkbenchFormulaValue(value.SignedInteger);
+                    case FPWorkbenchColumnType.UnsignedInteger:
+                        return value.UnsignedInteger > 9007199254740992UL ? new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.IntegerPrecision) : new FPWorkbenchFormulaValue(value.UnsignedInteger);
+                    default: return new FPWorkbenchFormulaValue(0, FPWorkbenchFormulaStatus.NonNumeric);
+                }
             }
             public FPWorkbenchFormulaValue Derived(int column)
             {

@@ -13,6 +13,20 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
         private string root;
         [SetUp] public void Setup() { root = Path.Combine(Path.GetTempPath(), "FPOverlay-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); }
         [TearDown] public void Teardown() { Directory.Delete(root, true); }
+        [Test] public async Task TypedPhysicalOverlayRetainsProgramIdentityAndPublishesDeclaredValues()
+        {
+            string source = Path.Combine(root, "typed.csv"); File.WriteAllText(source, "x,a,b\n0,\"1,25\",3\n1,---,4\n");
+            var data = await FPWorkbenchCsvDataset.ImportAsync(source, Path.Combine(root, "cache"), new FPWorkbenchCsvProfile());
+            var schema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Real, Culture = "de-DE", MissingTokens = new[] { "---" } } } };
+            var program = FPWorkbenchFormulaProgram.Compile(data, new FPWorkbenchFormulaSet { DatasetId = data.DatasetId }, schema.Compile(data));
+            var overlay = await FPWorkbenchOverlay.BuildAsync(data, new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, XColumn = 0 }, new[] { 1, 2 }, calculations: program);
+            var view = await overlay.QueryAsync(0, 1, 32);
+            Assert.That(view.FormulaFingerprint, Is.EqualTo(program.Fingerprint));
+            Assert.That(view.Minimum, Is.EqualTo(1.25)); Assert.That(view.Maximum, Is.EqualTo(4));
+            foreach (var series in view.Series) Assert.That(series.FormulaFingerprint, Is.EqualTo(program.Fingerprint));
+            Assert.That(view.Series[0].Bins[1].InvalidCount, Is.EqualTo(1));
+        }
         [Test] public async Task SharedXOverlayPublishesOneRangeAndUnionExtremaWithCorrectionIdentity()
         {
             string source = Path.Combine(root, "source.csv"); var csv = new StringBuilder("x,a,b\n");

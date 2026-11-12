@@ -17,6 +17,59 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             string source = Path.Combine(root, "source.csv"); File.WriteAllText(source, "a,b,c\n1,2,3\n", new UTF8Encoding(false));
             return FPWorkbenchCsvDataset.ImportAsync(source, Path.Combine(root, "cache"), new FPWorkbenchCsvProfile());
         }
+        [Test] public async Task TypedFormulaInputsPreserveCultureQualityAndIntegerPrecision()
+        {
+            var data = await Import();
+            var schema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                new FPWorkbenchColumnDeclaration { Column = 0, ColumnId = data.Cell(0, 0).ColumnId, Type = FPWorkbenchColumnType.Real, Culture = "de-DE", Units = "m", MissingTokens = new[] { "---" } },
+                new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.UnsignedInteger },
+                new FPWorkbenchColumnDeclaration { Column = 2, ColumnId = data.Cell(0, 2).ColumnId, Type = FPWorkbenchColumnType.Text } } };
+            var set = new FPWorkbenchFormulaSet { DatasetId = data.DatasetId };
+            set.Columns.Add(new FPWorkbenchDerivedColumn { Expression = "C1 * 2" });
+            var program = FPWorkbenchFormulaProgram.Compile(data, set, schema.Compile(data));
+            var evaluator = program.CreateEvaluator(); evaluator.SetRow(new[] { "1,25", "9007199254740993", "123" }, 0);
+            Assert.That(evaluator.Derived(0).Number, Is.EqualTo(2.5));
+            Assert.That(program.Units(0), Is.EqualTo("m"));
+            Assert.That(evaluator.Source(1).Status, Is.EqualTo(FPWorkbenchFormulaStatus.IntegerPrecision));
+            Assert.That(evaluator.Source(2).Status, Is.EqualTo(FPWorkbenchFormulaStatus.NonNumeric));
+            evaluator.SetRow(new[] { "---", "9007199254740992", "123" }, 1);
+            Assert.That(evaluator.Derived(0).Status, Is.EqualTo(FPWorkbenchFormulaStatus.Missing));
+            Assert.That(evaluator.Source(1).IsValid, Is.True);
+            var changes = new FPWorkbenchChangeSet { DatasetId = data.DatasetId };
+            changes.Set(data.Cell(0, 0), "1", "", FPWorkbenchEditKind.Masked, "fixture");
+            var masked = program.CreateEvaluator(changes.Snapshot()); masked.SetRow(new[] { "1", "2", "3" }, 0);
+            Assert.That(masked.Derived(0).Status, Is.EqualTo(FPWorkbenchFormulaStatus.Missing));
+            schema.Columns[0].Culture = "en-US";
+            Assert.That(FPWorkbenchFormulaProgram.Compile(data, set, schema.Compile(data)).Fingerprint, Is.Not.EqualTo(program.Fingerprint));
+            var restored = FPWorkbenchFormulaProgram.Compile(data, program.Definition);
+            Assert.That(restored.Fingerprint, Is.EqualTo(program.Fingerprint));
+            var copy = program.Definition; copy.TypedSchema.Columns[0].Culture = "en-US";
+            Assert.That(program.Definition.TypedSchema.Columns[0].Culture, Is.EqualTo("de-DE"));
+            set.SourceUnits.Add(new FPWorkbenchSourceUnit { Column = 0, Units = "s" });
+            Assert.Throws<ArgumentException>(() => FPWorkbenchFormulaProgram.Compile(data, set, schema.Compile(data)));
+        }
+        [Test] public async Task TypedFormulaSnapshotsRejectContradictionsAndDoNotCoerceBooleanOrUtc()
+        {
+            var data = await Import();
+            var schema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                new FPWorkbenchColumnDeclaration { Column = 0, ColumnId = data.Cell(0, 0).ColumnId, Type = FPWorkbenchColumnType.Boolean },
+                new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.UtcTimestamp } } };
+            var set = new FPWorkbenchFormulaSet { DatasetId = data.DatasetId };
+            var program = FPWorkbenchFormulaProgram.Compile(data, set, schema.Compile(data));
+            var evaluator = program.CreateEvaluator(); evaluator.SetRow(new[] { "true", "2025-01-17 11:49:52.0000001", "3" }, 0);
+            Assert.That(evaluator.Source(0).Status, Is.EqualTo(FPWorkbenchFormulaStatus.NonNumeric));
+            Assert.That(evaluator.Source(1).Status, Is.EqualTo(FPWorkbenchFormulaStatus.NonNumeric));
+            Assert.That(evaluator.Source(2).Number, Is.EqualTo(3));
+            var definition = program.Definition; definition.HasTypedSchema = false;
+            Assert.Throws<ArgumentException>(() => FPWorkbenchFormulaProgram.Compile(data, definition));
+            definition.HasTypedSchema = true; definition.TypedSchema = null;
+            Assert.Throws<ArgumentException>(() => FPWorkbenchFormulaProgram.Compile(data, definition));
+            definition.TypedSchema = schema; definition.TypedSchema.Columns[0].ColumnId = "foreign";
+            Assert.Throws<InvalidDataException>(() => FPWorkbenchFormulaProgram.Compile(data, definition));
+            var legacy = FPWorkbenchFormulaProgram.Compile(data, set).CreateEvaluator();
+            legacy.SetRow(new[] { "123", "2", "3" }, 0);
+            Assert.That(legacy.Source(0).Number, Is.EqualTo(123));
+        }
         [Test] public async Task ArithmeticPrecedenceDerivedDependenciesAndStableBindings()
         {
             var data = await Import(); var set = new FPWorkbenchFormulaSet { DatasetId = data.DatasetId };

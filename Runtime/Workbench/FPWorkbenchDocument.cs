@@ -181,11 +181,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                         data.ImportProfile.Delimiter != sourceDocument.Import.Delimiter || data.ImportProfile.EncodingCodePage != sourceDocument.Import.EncodingCodePage)
                         throw new InvalidDataException("Registered source revision/profile differs: " + sourceDocument.Name);
                     sourceDatasets[i] = data;
-                    if (sourceDocument.HasCalculations)
-                    {
-                        try { sourceDocument.Calculations = FPWorkbenchFormulaProgram.Compile(data, sourceDocument.Calculations).Definition; }
-                        catch (ArgumentException ex) { throw new InvalidDataException("Calculations differ from verified source schema: " + sourceDocument.Name, ex); }
+                    try {
+                        var program = sourceDocument.CompileProgram(data);
+                        if (sourceDocument.HasCalculations) sourceDocument.Calculations = program.Definition;
                     }
+                    catch (ArgumentException ex) { throw new InvalidDataException("Calculations differ from verified source schema: " + sourceDocument.Name, ex); }
                 }
                 var datasets = new FPWorkbenchCsvDataset[document.Sheets.Count];
                 for (int i = 0; i < datasets.Length; i++)
@@ -201,14 +201,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     if (sheet.Import.Delimiter != actualImport.Delimiter || sheet.Import.EncodingCodePage != actualImport.EncodingCodePage) throw new InvalidDataException("Saved import interpretation differs from the indexed source: " + sheet.Name);
                     if (sheet.Columns.ManualWidths.Length != 0 && sheet.Columns.ManualWidths.Length != dataset.ColumnCount && sheet.Columns.ManualWidths.Length != tableColumns) throw new InvalidDataException("Column layout differs from source schema: " + sheet.Name);
                     if (sheet.Columns.Projection.Order.Length > 0) {
-                        var program = sourceMetadata.HasCalculations ? FPWorkbenchFormulaProgram.Compile(dataset, sourceMetadata.Calculations) : null;
+                        var program = sourceMetadata.CompileProgram(dataset);
                         var table = new FPWorkbenchTableView(dataset, program); var identities = new string[table.ColumnCount];
                         for (int c = 0; c < identities.Length; c++) identities[c] = table.ColumnId(c);
                         var visible = sheet.Columns.Projection.Resolve(identities);
                         if (sheet.FirstColumn >= visible.Length) throw new InvalidDataException("Saved table column position exceeds its visible projection.");
                     }
                     if (sheet.Selection != null) {
-                        var program = sourceMetadata.HasCalculations ? FPWorkbenchFormulaProgram.Compile(dataset, sourceMetadata.Calculations) : null;
+                        var program = sourceMetadata.CompileProgram(dataset);
                         sheet.Selection.Resolve(new FPWorkbenchTableView(dataset, program));
                     }
                     sheet.Binding.Copy(dataset.ColumnCount); sheet.Columns.EnsureColumns(tableColumns);
@@ -216,7 +216,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                     {
                         try
                         {
-                            var program = sourceMetadata.HasCalculations ? FPWorkbenchFormulaProgram.Compile(dataset, sourceMetadata.Calculations) : null;
+                            var program = sourceMetadata.CompileProgram(dataset);
                             sheet.Binding.ResolveDerivedX(program);
                             if (sheet.Binding.HasDerivedY) sheet.PlotColumn = dataset.ColumnCount + sheet.Binding.ResolveDerivedY(program);
                         }
@@ -227,7 +227,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 foreach (var changes in document.Changes)
                 {
                     var dataset = Array.Find(sourceDatasets, d => d.DatasetId == changes.DatasetId);
-                    if (dataset != null) await changes.ValidateSourceAsync(dataset, cancellation).ConfigureAwait(false);
+                    if (dataset != null) {
+                        await changes.ValidateSourceAsync(dataset, cancellation).ConfigureAwait(false);
+                        var reference = document.Sources.Find(s => s.DatasetId == changes.DatasetId);
+                        if (reference.HasTypedSchema) reference.TypedSchema.Compile(dataset).ValidateChanges(changes);
+                    }
                 }
                 foreach (var figure in document.Figures)
                 {

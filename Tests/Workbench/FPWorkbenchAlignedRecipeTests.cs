@@ -9,6 +9,37 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchAlignedRecipeTests
     {
+        [Test] public async Task TypedPhysicalValuesRetainIndependentSchemasWhenProductsAreRegenerated()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPTypedRecipe-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+            try {
+                string a = Path.Combine(root, "a.csv"), b = Path.Combine(root, "b.csv");
+                File.WriteAllText(a, "key,x\n1,\"1,25\"\n2,\"2,5\"\n"); File.WriteAllText(b, "key,y\n1,3.5\n2,---\n");
+                var left = await FPWorkbenchCsvDataset.ImportAsync(a, Path.Combine(root, "a-cache"), new FPWorkbenchCsvProfile());
+                var right = await FPWorkbenchCsvDataset.ImportAsync(b, Path.Combine(root, "b-cache"), new FPWorkbenchCsvProfile());
+                FPWorkbenchTypedSchema Schema(FPWorkbenchCsvDataset data, string culture) => new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                    new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Real, Culture = culture, MissingTokens = new[] { "---" } } } };
+                var ls = Schema(left, "de-DE"); var rs = Schema(right, "");
+                var lp = FPWorkbenchFormulaProgram.Compile(left, new FPWorkbenchFormulaSet { DatasetId = left.DatasetId }, ls.Compile(left));
+                var rp = FPWorkbenchFormulaProgram.Compile(right, new FPWorkbenchFormulaSet { DatasetId = right.DatasetId }, rs.Compile(right));
+                var mapping = await FPWorkbenchAlignment.BuildAsync(left, right, new FPWorkbenchAlignmentOptions { KeyDomain = "ID", KeyKind = FPWorkbenchAlignmentKeyKind.Decimal });
+                var values = await FPWorkbenchAlignedValues.BuildAsync(mapping, 1, 1, lp, rp, FPWorkbenchExportInvalidPolicy.EmptyField);
+                var page = await values.Dataset.ReadPageAsync(0, 2, 0, 4);
+                Assert.That(page.Values[0], Is.EqualTo(new[] { "0", "0", "1.25", "3.5" }));
+                Assert.That(page.Values[1], Is.EqualTo(new[] { "1", "1", "2.5", "" }));
+                var recipe = FPWorkbenchAlignedFigureRecipe.FromValues(values.Metadata);
+                string json = JsonUtility.ToJson(recipe); ls.Columns[0].Culture = "en-US";
+                string product = Path.GetDirectoryName(values.Dataset.SourcePath), index = values.Dataset.CacheDirectory;
+                Directory.Delete(index, true); Directory.Delete(product, true); Directory.Delete(mapping.DirectoryPath, true);
+                var restored = JsonUtility.FromJson<FPWorkbenchAlignedFigureRecipe>(json);
+                var rebuilt = await restored.BuildAsync(left, right);
+                Assert.That((await rebuilt.Dataset.ReadPageAsync(0, 2, 0, 4)).Values[0], Is.EqualTo(page.Values[0]));
+                Assert.That(rebuilt.Metadata.LeftFormulaFingerprint, Is.EqualTo(lp.Fingerprint));
+                Assert.That(rebuilt.Metadata.RightFormulaFingerprint, Is.EqualTo(rp.Fingerprint));
+                Assert.That(restored.LeftCalculations.TypedSchema.Columns[0].Culture, Is.EqualTo("de-DE"));
+            }
+            finally { Directory.Delete(root, true); }
+        }
         [Test] public async Task WorkbookRecipeRegeneratesDeletedProductsFromFrozenOriginalInputs()
         {
             string root = Path.Combine(Path.GetTempPath(), "FPRecipe-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);

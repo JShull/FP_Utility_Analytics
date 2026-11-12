@@ -21,8 +21,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             try {
                 var data = await FPWorkbenchCsvDataset.ImportAsync(replacementCsv, target, source.Import, cancellation).ConfigureAwait(false); imported = true;
                 if (data.DatasetId != source.DatasetId) throw new InvalidDataException("Replacement CSV differs from the saved recording. Relinking cannot retarget annotations to changed data.");
-                if (source.HasCalculations) FPWorkbenchFormulaProgram.Compile(data, source.Calculations);
-                foreach (var changes in copy.Changes) if (changes.DatasetId == datasetId) await changes.ValidateSourceAsync(data, cancellation).ConfigureAwait(false);
+                var program = source.CompileProgram(data);
+                if (source.HasCalculations) source.Calculations = program.Definition;
+                foreach (var changes in copy.Changes) if (changes.DatasetId == datasetId) {
+                    await changes.ValidateSourceAsync(data, cancellation).ConfigureAwait(false);
+                    if (source.HasTypedSchema) source.TypedSchema.Compile(data).ValidateChanges(changes);
+                }
                 foreach (var figure in copy.Figures) {
                     if (figure.DatasetId == datasetId && figure.CorrectionSnapshot != null) await figure.CorrectionSnapshot.ValidateSourceAsync(data, cancellation).ConfigureAwait(false);
                     if (figure.Kind == FPWorkbenchFigureKind.AlignedScatter) {

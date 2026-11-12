@@ -13,6 +13,40 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
     public sealed class FPWorkbenchWindowTests
     {
         private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+        [UnityTest] public IEnumerator ClosingWindowKeepsPendingPageReservationsUntilWorkersTerminate()
+        {
+            var budget = new FPWorkbenchMemoryBudget(1024, 2);
+            budget.TryAcquire(512, out var raw); budget.TryAcquire(512, out var projected);
+            var rawTask = new System.Threading.Tasks.TaskCompletionSource<FPWorkbenchPage>();
+            var virtualTask = new System.Threading.Tasks.TaskCompletionSource<FPWorkbenchTablePage>();
+            var window = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>(); var type = window.GetType();
+            try {
+                window.ShowUtility();
+                type.GetField("pageCancel", Private).SetValue(window, new System.Threading.CancellationTokenSource());
+                type.GetMethod("Tick", Private).Invoke(window, null); type.GetMethod("Tick", Private).Invoke(window, null);
+                Assert.That(type.GetField("pageCancel", Private).GetValue(window), Is.Null);
+                type.GetField("pageWork", Private).SetValue(window, rawTask.Task);
+                type.GetField("pendingRawMemory", Private).SetValue(window, raw);
+                type.GetField("virtualPageWork", Private).SetValue(window, virtualTask.Task);
+                type.GetField("pendingVirtualMemory", Private).SetValue(window, projected);
+                window.Close();
+                Assert.That(type.GetField("windowActive", Private).GetValue(window), Is.EqualTo(false));
+                type.GetMethod("Tick", Private).Invoke(window, null);
+                Assert.That(type.GetField("pageWork", Private).GetValue(window), Is.Null);
+                UnityEngine.Object.DestroyImmediate(window); window = null;
+                Assert.That(budget.UsedBytes, Is.EqualTo(1024), "Closing a view cannot release scratch while its worker still owns it.");
+                Assert.That(budget.ActiveWorkers, Is.EqualTo(2));
+                rawTask.SetCanceled(); virtualTask.SetCanceled();
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                while (budget.LeaseCount != 0 && DateTime.UtcNow < deadline) yield return null;
+                Assert.That(budget.LeaseCount, Is.Zero); Assert.That(budget.UsedBytes, Is.Zero); Assert.That(budget.ActiveWorkers, Is.Zero);
+            }
+            finally {
+                rawTask.TrySetCanceled(); virtualTask.TrySetCanceled();
+                if (window != null) { window.Close(); UnityEngine.Object.DestroyImmediate(window); }
+                raw.Dispose(); projected.Dispose();
+            }
+        }
         [UnityTest] public IEnumerator WindowImportsAndPublishesOnlyRequestedPage()
         {
             string root = Path.Combine(Path.GetTempPath(), "FPWorkbenchWindow-" + Guid.NewGuid().ToString("N"));
@@ -167,6 +201,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             string root = Path.Combine(Path.GetTempPath(), "FPWorkbenchOpen-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root); string csv = Path.Combine(root, "source.csv"); File.WriteAllText(csv, "x,y\n0,3\n1,4\n");
             var window = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>(); string cache = null;
+            FPWorkbenchMemoryBudget.Reservation workbookBlocker = null;
+            FPWorkbenchMemoryBudget.Reservation saveScanA = null, saveScanB = null;
             try
             {
                 window.ShowUtility(); window.position = new Rect(10, 10, 900, 650);
@@ -178,6 +214,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 Assert.That(dataset, Is.Not.Null); cache = dataset.CacheDirectory;
                 string id = (string)sheet.GetType().GetField("Id").GetValue(sheet);
                 string path = Path.Combine(root, "saved.fpworkbook");
+                var saveResources = type.Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchEditorResources");
+                var saveScans = (FPWorkbenchMemoryBudget)saveResources.GetField("Scans", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+                Assert.That(saveScans.TryAcquire(1, out saveScanA), Is.True); Assert.That(saveScans.TryAcquire(1, out saveScanB), Is.True);
+                type.GetMethod("SaveWorkbook", Private).Invoke(window, new object[] { path });
+                Assert.That(type.GetField("workbookSave", Private).GetValue(window), Is.Null); Assert.That(File.Exists(path), Is.False);
+                saveScanA.Dispose(); saveScanB.Dispose(); saveScanA = null; saveScanB = null;
                 type.GetMethod("SaveWorkbook", Private).Invoke(window, new object[] { path });
                 while (type.GetField("workbookSave", Private).GetValue(window) != null && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(File.Exists(path), Is.True);
@@ -187,8 +229,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 Assert.That(((IList)sheetsField.GetValue(window))[0], Is.SameAs(sheet));
                 Assert.That(type.GetField("error", Private).GetValue(window), Is.Not.Null);
                 sheet.GetType().GetField("Name").SetValue(sheet, "Unsaved name");
+                var resources = type.Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchEditorResources");
+                var memory = (FPWorkbenchMemoryBudget)resources.GetField("Memory", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+                Assert.That(memory.TryAcquire(memory.LimitBytes - memory.UsedBytes, out workbookBlocker), Is.True);
                 type.GetMethod("OpenWorkbook", Private).Invoke(window, new object[] { path });
-                while (type.GetField("workbookLoad", Private).GetValue(window) != null && DateTime.UtcNow < deadline) yield return null;
+                Assert.That(type.GetField("pendingWorkbookLoad", Private).GetValue(window), Is.Not.Null);
+                Assert.That(type.GetField("workbookLoad", Private).GetValue(window), Is.Null);
+                Assert.That(((IList)sheetsField.GetValue(window))[0], Is.SameAs(sheet), "Pending admission retains the current workbook.");
+                workbookBlocker.Dispose(); workbookBlocker = null;
+                while ((type.GetField("workbookLoad", Private).GetValue(window) != null || type.GetField("pendingWorkbookLoad", Private).GetValue(window) != null) && DateTime.UtcNow < deadline) yield return null;
                 var restored = ((IList)sheetsField.GetValue(window))[0];
                 Assert.That(restored.GetType().GetField("Id").GetValue(restored), Is.EqualTo(id));
                 Assert.That(restored.GetType().GetField("Name").GetValue(restored), Is.EqualTo("source"));
@@ -196,6 +245,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             }
             finally
             {
+                workbookBlocker?.Dispose();
+                saveScanA?.Dispose(); saveScanB?.Dispose();
                 window.Close(); UnityEngine.Object.DestroyImmediate(window);
                 if (Directory.Exists(root)) Directory.Delete(root, true);
                 if (cache != null && Directory.Exists(cache)) Directory.Delete(cache, true);

@@ -12,6 +12,31 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchFigureTests
     {
+        [Test] public void ScalarImageOmitsMixedLogBinsAndDoesNotConnectAcrossGaps()
+        {
+            var view = new FPWorkbenchSeriesView();
+            void Set(string name, object value) => view.GetType().GetProperty(name).SetValue(view, value);
+            Set("StartX", 1d); Set("EndX", 3d); Set("Minimum", -1d); Set("Maximum", 3d);
+            var bins = new[] {
+                new FPWorkbenchSeriesBin { Count = 2, FirstIndex = 0, EndIndex = 2, FirstX = 1, LastX = 1.5, Minimum = -1, Maximum = 2, FirstY = -1, LastY = 2 },
+                new FPWorkbenchSeriesBin { Count = 1, FirstIndex = 2, EndIndex = 3, FirstX = 2, LastX = 2, Minimum = 2, Maximum = 2, FirstY = 2, LastY = 2 },
+                new FPWorkbenchSeriesBin { Count = 1, GapCount = 1, FirstIndex = 3, EndIndex = 4, FirstX = 3, LastX = 3, Minimum = 3, Maximum = 3, FirstY = 3, LastY = 3 } };
+            Set("Bins", bins);
+            var settings = new FPWorkbenchPlotSettings { LockY = true, MinimumY = 1, MaximumY = 4, YScale = FPWorkbenchAxisScale.Log10, XScale = FPWorkbenchAxisScale.Log10 };
+            var render = typeof(FPWorkbenchFigureWindow).GetMethod("RenderScalarImage", BindingFlags.Static | BindingFlags.NonPublic);
+            int RenderPixels() {
+                object[] arguments = { view, settings, "Fixture", 640, 480, false, 0 };
+                var image = (Texture2D)render.Invoke(null, arguments);
+                try {
+                    Assert.That(arguments[5], Is.EqualTo(false)); Assert.That(arguments[6], Is.EqualTo(1));
+                    int cyan = 0; foreach (var pixel in image.GetPixels32()) if (pixel.b > pixel.r + 30 && pixel.g > pixel.r + 30) cyan++;
+                    return cyan;
+                } finally { UnityEngine.Object.DestroyImmediate(image); }
+            }
+            Assert.That(RenderPixels(), Is.LessThan(30), "A gap must retain isolated sample markers.");
+            bins[2].GapCount = 0;
+            Assert.That(RenderPixels(), Is.GreaterThan(100), "Contiguous valid samples should connect.");
+        }
         [UnityTest] public IEnumerator SharedFiguresRetainOneSessionThroughCloseAndSerializedRestore()
         {
             string root = Path.Combine(Path.GetTempPath(), "FPFigureTest-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
@@ -34,7 +59,36 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 var deadline = DateTime.UtcNow.AddSeconds(10);
                 while (session.View == null && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(session.View, Is.Not.Null); Assert.That(session.View.Maximum, Is.EqualTo(3));
-                first.Close(); first = null;
+                var stableView = session.View; session.Settings.YScale = FPWorkbenchAxisScale.Log10;
+                foreach (FPWorkbenchPlotStyle style in Enum.GetValues(typeof(FPWorkbenchPlotStyle))) {
+                    session.Settings.Style = style;
+                    string output = Path.Combine(root, style + ".fpfigure");
+                    var pngWork0 = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)type.GetMethod("ExportPng", flags).Invoke(first, new object[] { output, 640, 480 });
+                    while (!pngWork0.IsCompleted) yield return null; pngWork0.GetAwaiter().GetResult();
+                    Assert.That(session.View, Is.SameAs(stableView)); Assert.That(session.IsBusy, Is.False);
+                    var image = new Texture2D(2, 2);
+                    try {
+                        Assert.That(image.LoadImage(File.ReadAllBytes(Path.Combine(output, "figure.png"))), Is.True);
+                        Assert.That(image.width, Is.EqualTo(640)); Assert.That(image.height, Is.EqualTo(480));
+                        int cyan = 0; foreach (var pixel in image.GetPixels32()) if (pixel.b > pixel.r + 30 && pixel.g > pixel.r + 30) cyan++;
+                        Assert.That(cyan, Is.GreaterThan(5));
+                    } finally { UnityEngine.Object.DestroyImmediate(image); }
+                    var metadata = JsonUtility.FromJson(File.ReadAllText(Path.Combine(output, "provenance.json")), type.GetNestedType("ScalarImageProvenance", BindingFlags.NonPublic));
+                    var sheet = (FPWorkbenchSheetDocument)metadata.GetType().GetField("Sheet").GetValue(metadata);
+                    Assert.That(sheet.DatasetId, Is.EqualTo(dataset.DatasetId)); Assert.That(sheet.Binding.YColumn, Is.EqualTo(1));
+                    Assert.That(sheet.Plot.YScale, Is.EqualTo(FPWorkbenchAxisScale.Log10)); Assert.That(sheet.Plot.Style, Is.EqualTo(style));
+                }
+                double end = session.Settings.EndX; session.Settings.EndX += 1;
+                string staleOutput = Path.Combine(root, "stale.fpfigure");
+                Assert.That(Assert.Throws<TargetInvocationException>(() => type.GetMethod("ExportPng", flags).Invoke(first, new object[] { staleOutput, 640, 480 })).InnerException, Is.TypeOf<InvalidOperationException>());
+                Assert.That(Directory.Exists(staleOutput), Is.False); session.Settings.EndX = end;
+                first.Close();
+                // A captured update callback after close must not resurrect a source/session lease.
+                type.GetField("opening", flags).SetValue(first, System.Threading.Tasks.Task.FromResult(dataset));
+                type.GetMethod("Tick", flags).Invoke(first, null);
+                Assert.That(type.GetField("lease", flags).GetValue(first), Is.Null);
+                Assert.That(session.LeaseCount, Is.EqualTo(1));
+                first = null;
                 Assert.That(session.IsDisposed, Is.False); Assert.That(session.LeaseCount, Is.EqualTo(1));
                 session.Settings.Title = "Unsaved shared title";
                 type.GetMethod("Capture", flags).Invoke(second, null);

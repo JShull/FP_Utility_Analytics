@@ -65,7 +65,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (changes != null && changes.DatasetId != dataset.DatasetId) throw new ArgumentException("Point corrections belong to another source.");
             var schema = new FPWorkbenchTableView(dataset, calculations); var selected = (int[])columns.Clone(); var ids = new string[selected.Length]; bool derived = false;
             for (int c = 0; c < selected.Length; c++) { ids[c] = schema.ColumnId(selected[c]); derived |= schema.IsCalculated(selected[c]); }
-            string formula = derived ? calculations.Fingerprint : "none", correction = changes?.Fingerprint ?? "original";
+            string formula = derived || calculations?.TypedSchemaFingerprint != null && calculations.TypedSchemaFingerprint != "none" ? calculations.Fingerprint : "none", correction = changes?.Fingerprint ?? "original";
             var program = calculations ?? FPWorkbenchFormulaProgram.Compile(dataset, new FPWorkbenchFormulaSet { DatasetId = dataset.DatasetId });
             string key;
             using (var buffer = new MemoryStream())

@@ -37,6 +37,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (dataset == null || binding == null) throw new ArgumentNullException();
             var settings = binding.Copy(dataset.ColumnCount);
             if (changes != null && changes.DatasetId != dataset.DatasetId) throw new ArgumentException("Series corrections belong to another source revision.");
+            if (calculations != null && calculations.DatasetId != dataset.DatasetId) throw new ArgumentException("Series calculations belong to another source revision.");
             if ((settings.HasDerivedY || settings.HasDerivedX) && (calculations == null || calculations.DatasetId != dataset.DatasetId)) throw new ArgumentException("Series calculations belong to another source revision or are missing.");
             int derived = settings.ResolveDerivedY(calculations);
             int derivedX = settings.ResolveDerivedX(calculations);
@@ -45,7 +46,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         private static FPWorkbenchSeriesCache Build(FPWorkbenchCsvDataset dataset, FPWorkbenchSeriesBinding settings, CancellationToken token, FPWorkbenchChangeSnapshot changes, FPWorkbenchFormulaProgram calculations, int derived, int derivedX)
         {
             if (dataset.RowCount == 0) throw new InvalidDataException("A plot requires at least one source row.");
-            string formula = derived < 0 && derivedX < 0 ? "none" : calculations.Fingerprint;
+            bool typed = calculations != null && calculations.TypedSchemaFingerprint != "none";
+            string formula = derived < 0 && derivedX < 0 && !typed ? "none" : calculations.Fingerprint;
             string correction = changes?.Fingerprint ?? "original";
             FPWorkbenchSeriesCache Qualify(FPWorkbenchSeriesCache value)
             {
@@ -78,7 +80,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 using (var level = new BinaryWriter(File.Create(LevelPath(staging, 0))))
                 {
                     dataset.SkipHeader(source, token); var parser = dataset.Parser(source, token);
-                    var evaluator = derived < 0 && derivedX < 0 ? null : calculations.CreateEvaluator(changes);
+                    var evaluator = derived < 0 && derivedX < 0 && !typed ? null : calculations.CreateEvaluator(changes);
                     FPWorkbenchSeriesBin aggregate = default;
                     for (long row = 0; row < dataset.RowCount; row++)
                     {
@@ -89,10 +91,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                         {
                             evaluator.SetRow(values, row);
                             if (derived >= 0) { var computed = evaluator.Derived(derived); if (computed.IsValid) y = computed.Number; }
+                            else if (typed) { var computed = evaluator.Source(settings.YColumn); if (computed.IsValid) y = computed.Number; }
                             if (derivedX >= 0)
                             {
                                 var coordinate = evaluator.Derived(derivedX);
                                 if (!coordinate.IsValid) throw new InvalidDataException("Invalid calculated X at logical row " + row + ": " + coordinate.Status);
+                                computedX = coordinate.Number;
+                            }
+                            else if (typed && settings.XMode == FPWorkbenchXMode.Numeric)
+                            {
+                                var coordinate = evaluator.Source(settings.XColumn);
+                                if (!coordinate.IsValid) throw new InvalidDataException("Invalid typed numeric X at logical row " + row + ": " + coordinate.Status);
                                 computedX = coordinate.Number;
                             }
                         }
@@ -107,11 +116,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                             if (derivedX < 0 && settings.XMode != FPWorkbenchXMode.Row && settings.XColumn != physicalY) Apply(settings.XColumn);
                             if (settings.XMode == FPWorkbenchXMode.UtcDateTime && settings.DateColumn != physicalY && settings.DateColumn != settings.XColumn) Apply(settings.DateColumn);
                         }
-                        double x = derivedX >= 0 ? computedX : settings.ReadX(values, row, ref origin);
+                        double x = derivedX >= 0 || typed && settings.XMode == FPWorkbenchXMode.Numeric ? computedX : settings.ReadX(values, row, ref origin);
                         if (row > 0 && x < previous) throw new InvalidDataException("X decreases at logical row " + row + ". A sorted/segmented mapping is required; samples were not reordered.");
                         if (row == 0) first = x;
                         if (!FPWorkbenchSeriesBinding.Finite(x - first)) throw new InvalidDataException("X extent exceeds finite double range at logical row " + row + ".");
-                        if (derived < 0 && (!double.TryParse(values[settings.YColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out y) || !FPWorkbenchSeriesBinding.Finite(y))) y = double.NaN;
+                        if (derived < 0 && !typed && (!double.TryParse(values[settings.YColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out y) || !FPWorkbenchSeriesBinding.Finite(y))) y = double.NaN;
                         bool gap = row > 0 && settings.MaximumGap > 0 && x - previous > settings.MaximumGap;
                         var point = new FPWorkbenchSeriesPoint(x, y, row, gap);
                         WritePoint(points, point); aggregate.Merge(FPWorkbenchSeriesBin.Point(row, point));

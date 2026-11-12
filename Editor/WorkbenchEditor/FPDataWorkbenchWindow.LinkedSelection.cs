@@ -35,7 +35,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             int index = sheets.FindIndex(s => s.Dataset?.DatasetId == pendingLinkedDataset);
             if (index < 0)
             {
-                if (sourceOpening == null) { pendingLinkedDataset = null; pendingLinkedColumns = null; }
+                if (sourceOpening == null && pendingSourceOpening == null) { pendingLinkedDataset = null; pendingLinkedColumns = null; }
                 return false;
             }
             var sheet = sheets[index];
@@ -52,7 +52,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 sheet.ProjectionUndo ??= new FPWorkbenchColumnProjectionUndo(value => { if (sheets.Contains(sheet)) ApplyColumnProjection(sheet, value); });
                 sheet.ProjectionUndo.Record(before, JsonUtility.ToJson(projection)); ApplyColumnProjection(sheet, projection);
             }
-            int first = int.MaxValue; foreach (int column in linkedColumns) first = Math.Min(first, Array.IndexOf(sheet.ColumnOrder, column));
+            int first = int.MaxValue;
+            foreach (int column in linkedColumns) {
+                if (Array.IndexOf(sheet.Columns.Projection.Frozen, sheet.SchemaIds[column]) >= 0) continue;
+                int offset = 0;
+                foreach (int candidate in sheet.ColumnOrder) {
+                    if (Array.IndexOf(sheet.Columns.Projection.Frozen, sheet.SchemaIds[candidate]) >= 0) continue;
+                    if (candidate == column) { first = Math.Min(first, offset); break; } offset++;
+                }
+            }
             sheet.FirstRow = linkedRow; sheet.FirstColumn = first == int.MaxValue ? 0 : first;
             selectedDataset = null; page = null; failedPage = null; CancelVirtualPage();
             status = "Figure source row " + (linkedRow + 1) + " highlighted. Table uses its current Original/Effective layer; the figure retains its frozen snapshot.";

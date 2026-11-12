@@ -33,6 +33,25 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 type.GetField("maximumPoints", flags).SetValue(window, 2); window.Repaint(); yield return null;
                 while ((View(window).Points.Count != 2 || Busy(window)) && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(View(window).Decimated, Is.True); Assert.That(View(window).MatchingCount, Is.EqualTo(4));
+                var published = View(window); string imageOutput = Path.Combine(root, "scatter.fpfigure");
+                type.GetField("invalidPolicy", flags).SetValue(window, FPWorkbenchInvalidPolicy.Skip);
+                var pngWork0 = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)type.GetMethod("ExportPng", flags).Invoke(window, new object[] { imageOutput, 640, 480 });
+                while (!pngWork0.IsCompleted) yield return null; pngWork0.GetAwaiter().GetResult();
+                Assert.That(View(window), Is.SameAs(published)); Assert.That(Busy(window), Is.False);
+                var image = new Texture2D(2, 2);
+                try {
+                    Assert.That(image.LoadImage(File.ReadAllBytes(Path.Combine(imageOutput, "figure.png"))), Is.True);
+                    Assert.That(image.width, Is.EqualTo(640)); Assert.That(image.height, Is.EqualTo(480));
+                    int colored = 0; foreach (var pixel in image.GetPixels32()) if (pixel.b > pixel.r + 30 && pixel.g > pixel.r + 30) colored++;
+                    Assert.That(colored, Is.GreaterThan(2));
+                } finally { UnityEngine.Object.DestroyImmediate(image); }
+                var metadata = JsonUtility.FromJson(File.ReadAllText(Path.Combine(imageOutput, "provenance.json")), type.GetNestedType("ScatterImageProvenance", BindingFlags.NonPublic));
+                Assert.That(metadata.GetType().GetField("Sampled").GetValue(metadata), Is.EqualTo(true));
+                Assert.That(metadata.GetType().GetField("MatchingPoints").GetValue(metadata), Is.EqualTo(4L));
+                Assert.That(metadata.GetType().GetField("DisplayedRows").GetValue(metadata), Is.EqualTo(new[] { published.Points[0].Row, published.Points[1].Row }));
+                var savedImage = (FPWorkbenchFigureDocument)metadata.GetType().GetField("Figure").GetValue(metadata);
+                Assert.That(savedImage.PointBudget, Is.EqualTo(2)); Assert.That(savedImage.InvalidPolicy, Is.EqualTo(FPWorkbenchInvalidPolicy.Reject), "Unapplied policy draft is not the cache's policy.");
+                type.GetField("invalidPolicy", flags).SetValue(window, FPWorkbenchInvalidPolicy.Reject);
                 type.GetMethod("Navigate", flags).Invoke(window, new object[] { .5, .5, .5, 0d, 0d }); yield return null;
                 while ((Busy(window) || View(window).Bounds.MinimumX != .5) && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(View(window).Bounds.MinimumX, Is.EqualTo(.5)); Assert.That(View(window).MatchingCount, Is.EqualTo(1));

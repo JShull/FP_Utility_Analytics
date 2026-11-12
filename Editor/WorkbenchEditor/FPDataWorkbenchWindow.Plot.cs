@@ -84,7 +84,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 {
                     bool derived = sheet.PlotColumn >= sheet.Dataset.ColumnCount;
                     FPWorkbenchHistogramWindow.Open(sheet.Dataset, derived ? 0 : sheet.PlotColumn, sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), workbookId,
-                        derived ? sheet.TableProgram : null, derived ? sheet.TableProgram.ColumnId(sheet.PlotColumn - sheet.Dataset.ColumnCount) : null);
+                        sheet.TableProgram, derived ? sheet.TableProgram.ColumnId(sheet.PlotColumn - sheet.Dataset.ColumnCount) : null);
                 }
                 catch (Exception ex) { error = ex.Message; }
             }
@@ -118,7 +118,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (GUILayout.Button("Apply binding / build plot")) StartSeries(sheet, true);
             if (sheet.FigureLease != null && sheet.FigureLease.Session.IsBusy)
             {
-                GUILayout.Label(sheet.FigureLease.Session.IsBuilding ? "Building/verifying series cache…" : "Reading cached view…", EditorStyles.miniLabel);
+                GUILayout.Label(sheet.FigureLease.Session.WaitingForMemory ? "Waiting for shared memory/background capacity…" : sheet.FigureLease.Session.IsBuilding ? "Building/verifying series cache…" : "Reading cached view…", EditorStyles.miniLabel);
                 if (GUILayout.Button("Close plot")) { sheet.FigureLease.Dispose(); sheet.FigureLease = null; sheet.Series = null; sheet.ShowPlot = false; summary = null; }
             }
             if (sheet.Series != null)

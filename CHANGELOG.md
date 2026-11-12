@@ -9,7 +9,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Runtime double linear/Log10 axis transforms and bounded original-unit tick generation as the numerical foundation for forthcoming logarithmic plot controls.
+- Runtime owned disk-cache store with estimated quota admission, content ownership manifests, active leases, persisted monotonic LRU eviction and protected unknown/modified content; Workbench integration remains pending.
+
+- Bounded immutable CSV prefix reporting before full hashing/indexing, with an explicitly unverified read-only Editor preview and close-safe worker delivery.
+
+- Shared interactive admission for selection framing, alignment pages and aligned original-row lookup; background admission for workbook/correction metadata operations and cancellation on workbook replacement.
+
+- Shared admission for all five detached figure source reloads and workbook recovery read/relink/save operations, with persisted parser bounds, pending requests and terminal cleanup.
+
+- Shared admission for Workbench CSV imports, serialized sheet reloads, registered-source reopening and whole-workbook verification; pending cancellation and persisted parser-bound accounting.
+
+- Shared scan/payload admission for alignment verification, mappings, matched-value materialization and saved aligned-scatter regeneration, with frozen deferred requests and terminal cleanup.
+
+- Shared background admission for XY/XYZ and same-source overlay cache construction, frozen deferred requests, and terminal cancellation/close cleanup.
+
+- Scalar series-construction scan/payload admission shared by embedded and detached figures, pending-capacity feedback, and detached late-callback lifecycle protection.
+
+- Shared clipboard-copy and streamed CSV-export admission, explicit capacity refusal, and terminal-worker reservation ownership across cancellation/window close.
+
+- Shared memory/background-job admission before figure image capture, transferred through encoder/publication lifetime, with explicit capacity refusal and unchanged requested output dimensions.
+
+- Histogram fit/count byte reservations and separate background scan admission, preserving interactive read slots and supporting pending cancellation, Undo and terminal cleanup with retained-result accounting.
+
+- Shared scatter result and 3D preparation/mesh reservation accounting with capacity deferral, terminal cleanup and cancellation across 3D update stages while retaining previous geometry.
+
+- Overlay queries share the table/scalar resource account with bounded sequential per-series reads and terminal cleanup; typed physical overlays preserve and validate their program revision.
+
+- Scalar query/retained-view memory reservations sharing the Editor table pool; capacity refusal defers current requests without queued workers, and shared figure owners retain one accounted view until final-owner cleanup.
+
+- Shared Editor table-page byte/worker reservations, retained-page ownership and sidebar counters, with thread-safe caller-owned runtime accounting. Late update callbacks cannot restart reads after a Workbench window closes.
+
+- Unified active-source program compilation across workbook admission, relinking and Editor consumers, with early active type/formula unit and identity validation while retaining independent frozen figure snapshots.
+
+- Column type/missing-value authoring controls with culture, units, UTC and boolean policies; shared atomic calculation/schema Undo validates corrections and unit compatibility before Apply/Clear or Undo/Redo.
+
+- Alignment Editor value programs now retain independent source type declarations for physical and calculated columns; saved aligned recipes regenerate numeric products from frozen parsing rules.
+
+- Active Editor source declarations now supply typed programs to table/plot consumers even without calculated columns. Physical histograms retain typed program snapshots through saved-figure reopening; calculation authoring checks current declarations before commit.
+
+- Typed physical scalar numeric X/Y interpretation and schema-qualified summary caches when a typed program is supplied, preserving explicit UTC binding and legacy untyped behavior.
+
+- Optional immutable typed formula source snapshots with declared parsing/units and precision checks; schema-qualified physical scatter caches prevent reuse across different interpretations. Source-wide consumer integration remains in progress.
+
+- Typed active-correction validation before Editor commit/import/Undo and workbook/relink admission, retaining explicit quality actions and rejecting incompatible overrides without coercion.
+
+- Typed virtual table-page classifications with original/effective values, mask/missing quality preservation, schema-qualified stale-page checks and Editor state hints; typed edit/numeric consumers remain pending.
+
+- Typed schema persistence and verified physical-column admission in registered workbook sources, retained through source refresh/relink and alignment metadata snapshots; typed data consumers remain pending.
+
+- Runtime explicit physical-column type/null/culture/UTC declarations and immutable verified parsers, retaining exact integer IDs, raw text and masked parsed states; pipeline/Editor integration remains pending.
+
+- Background PNG encoding/publication in every figure window, with shared job admission, cancel/status/timing UI and close/script-reload cancellation; main-thread capture remains explicit.
+
+- Runtime bounded background RGBA8 PNG publication with exclusive admission, immutable request snapshots, cancellation/staging cleanup and encode/write metrics.
+
+- Shared scalar/overlay PNG rendering with dual-axis scales/ticks/labels, color-keyed L/R legends and coherent completed-view provenance.
+
+- Ordinary/aligned scatter PNG export with completed-view sampling/row provenance, both aligned original-source references and applied invalid-policy capture.
+
+- Scalar figure PNG export preserving completed-view styles, gaps, envelopes and linear/log axes, with frozen source/settings provenance and stale-view refusal; shared bounded histogram/scalar image rendering.
+
+- Explicit-size histogram PNG export with offscreen bars/axes/labels and published-result provenance, exact bins/counts, image hash and staged no-overwrite publication.
+
+- Explicit-size 3D PNG export with a separate camera, bounded output dimensions, staged no-overwrite image/provenance publication and encoded-image hash; 2D/histogram PNG export remains pending.
+
+- Bounded 3D point color/size appearance presets (`.fp3dplot`) and appearance-only Undo/Redo, retaining camera/source/query settings and existing renderer data.
+
+- Frozen identifier columns in the virtual Editor table: header freeze/unfreeze, bounded pinned-width layout, projected paging, scrolling counts, range selection, linked reveal, saved stable-ID metadata and projection Undo.
+
+- Bounded histogram presentation presets (`.fphistplot`) for density/count mode and grid visibility, with Undo/Redo and no source requery on application; shared staged preset file actions.
+
+- Right-Y presentation preset actions for dual-axis overlays, preserving destination limits, shared-X and series controls, with atomic log-domain validation and presentation Undo/Redo.
+
+- Double linear/Log10 axes for scalar, shared overlay/dual-Y and scatter views, with physical-unit ticks, logarithmic navigation, saved settings, presets and Undo. Nonpositive log domains report explicitly; mixed/nonpositive scalar summary bins are omitted with broken continuity and an inspection notice.
 
 - Shared deterministic complete-date UTC parsing for scalar plots/alignment and early workbook binding validation, rejecting implicit current-date/timezone-dependent declarations.
 

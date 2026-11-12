@@ -10,6 +10,80 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchDocumentTests
     {
+        [Test] public async Task ActiveSourceProgramIsConsistentAcrossWorkbookAdmissionAndRelinking()
+        {
+            string raw = Path.Combine(root, "typed-source.csv"), moved = Path.Combine(root, "moved.csv");
+            const string original = "x,y\n1,\"1,25\"\n2,---\n"; File.WriteAllText(raw, original);
+            var data = await FPWorkbenchCsvDataset.ImportAsync(raw, Path.Combine(root, "typed-cache"), new FPWorkbenchCsvProfile());
+            var source = new FPWorkbenchSourceDocument { DatasetId = data.DatasetId, SourcePath = data.SourcePath, CacheDirectory = data.CacheDirectory,
+                Import = data.ImportProfile, HasTypedSchema = true, HasCalculations = true,
+                TypedSchema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                    new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Real, Culture = "de-DE", Units = "m", MissingTokens = new[] { "---" } } } },
+                Calculations = new FPWorkbenchFormulaSet { DatasetId = data.DatasetId } };
+            source.Calculations.Columns.Add(new FPWorkbenchDerivedColumn { Expression = "C2 * 2" });
+            string fingerprint = source.TypedSchema.Compile(data).Fingerprint;
+            var document = new FPWorkbenchDocument(); document.Sources.Add(source);
+            string path = Path.Combine(root, "typed-program.fpworkbook"); await FPWorkbenchDocumentFile.SaveAsync(document, path);
+            var loaded = await FPWorkbenchDocumentFile.LoadAsync(path);
+            var admitted = loaded.Document.Sources[0]; var program = admitted.CompileProgram(loaded.SourceDatasets[0]);
+            Assert.That(program.TypedSchemaFingerprint, Is.EqualTo(fingerprint));
+            Assert.That(admitted.Calculations.TypedSchema.Compile(data).Fingerprint, Is.EqualTo(fingerprint));
+            var evaluator = program.CreateEvaluator(); evaluator.SetRow(new[] { "1", "1,25" }, 0);
+            Assert.That(evaluator.Derived(0).Number, Is.EqualTo(2.5)); Assert.That(program.Units(0), Is.EqualTo("m"));
+            File.Move(raw, moved);
+            var recovered = await FPWorkbenchSourceRecovery.RelinkAsync(loaded.Document, data.DatasetId, moved, Path.Combine(root, "relinked"));
+            var reopened = await FPWorkbenchCsvDataset.OpenAsync(recovered.Sources[0].CacheDirectory);
+            Assert.That(recovered.Sources[0].CompileProgram(reopened).Fingerprint, Is.EqualTo(program.Fingerprint));
+            Assert.That(File.ReadAllText(moved), Is.EqualTo(original)); Assert.That(loaded.Document.Sources[0].SourcePath, Is.EqualTo(raw));
+            source.Calculations.Columns[0].Expression = "C1 + C2";
+            source.Calculations.SourceUnits.Add(new FPWorkbenchSourceUnit { Column = 0, Units = "s" });
+            Assert.Throws<InvalidDataException>(() => source.Validate(), "Admission must validate active type units with formulas before publishing a workbook.");
+            admitted.HasCalculations = false; admitted.Calculations = null;
+            Assert.That(admitted.CompileProgram(data).ColumnCount, Is.Zero); Assert.That(admitted.CompileProgram(data).TypedSchemaFingerprint, Is.EqualTo(fingerprint));
+            admitted.HasTypedSchema = false;
+            Assert.Throws<InvalidDataException>(() => admitted.CompileProgram(data));
+        }
+        [Test] public async Task TypedWorkbookRejectsInvalidActiveCorrectionsButAdmitsQualityActions()
+        {
+            var document = await MakeDocument(); document.Validate(); var reference = document.Sources[0];
+            var data = await FPWorkbenchCsvDataset.OpenAsync(reference.CacheDirectory);
+            reference.HasTypedSchema = true;
+            reference.TypedSchema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.UnsignedInteger } } };
+            var invalid = new FPWorkbenchChangeSet { DatasetId = data.DatasetId };
+            invalid.Set(data.Cell(0, 1), "1", "-1", FPWorkbenchEditKind.Number, "type conflict"); document.Changes.Add(invalid);
+            string path = Path.Combine(root, "bad-typed-edit.fpworkbook"); await FPWorkbenchDocumentFile.SaveAsync(document, path);
+            try { await FPWorkbenchDocumentFile.LoadAsync(path); Assert.Fail("Declared unsigned values must reject negative correction overrides."); } catch (InvalidDataException) { }
+            document.Changes.Clear(); var quality = new FPWorkbenchChangeSet { DatasetId = data.DatasetId };
+            quality.Set(data.Cell(0, 1), "1", "", FPWorkbenchEditKind.Missing, "missing quality");
+            quality.Set(data.Cell(1, 1), "2", "", FPWorkbenchEditKind.Masked, "mask quality"); document.Changes.Add(quality);
+            string valid = Path.Combine(root, "typed-quality.fpworkbook"); await FPWorkbenchDocumentFile.SaveAsync(document, valid);
+            var loaded = await FPWorkbenchDocumentFile.LoadAsync(valid);
+            Assert.That(loaded.Document.Changes[0].Cells.Count, Is.EqualTo(2));
+        }
+        [Test] public async Task TypedSourceMetadataPersistsWithoutOpenSheetsAndVerifiesActualColumnIdentity()
+        {
+            var document = await MakeDocument(); document.Validate(); var source = document.Sources[0];
+            var dataset = await FPWorkbenchCsvDataset.OpenAsync(source.CacheDirectory);
+            source.HasTypedSchema = true;
+            source.TypedSchema = new FPWorkbenchTypedSchema { DatasetId = dataset.DatasetId, Columns = new[] {
+                new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = dataset.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Real, Units = "m", MissingTokens = new[] { "---", "" } } } };
+            string fingerprint = source.TypedSchema.Compile(dataset).Fingerprint;
+            document.Sheets.Clear(); document.ActiveSheet = 0;
+            string path = Path.Combine(root, "typed.fpworkbook"); byte[] original = File.ReadAllBytes(source.SourcePath);
+            await FPWorkbenchDocumentFile.SaveAsync(document, path);
+            var loaded = await FPWorkbenchDocumentFile.LoadAsync(path);
+            Assert.That(loaded.Document.Sheets, Is.Empty); Assert.That(loaded.Document.Sources[0].HasTypedSchema, Is.True);
+            Assert.That(loaded.Document.Sources[0].TypedSchema.Compile(loaded.SourceDatasets[0]).Fingerprint, Is.EqualTo(fingerprint));
+            source.TypedSchema.Columns[0].ColumnId = "foreign";
+            string bad = Path.Combine(root, "foreign-column.fpworkbook");
+            try { await FPWorkbenchDocumentFile.SaveAsync(document, bad); Assert.Fail("Metadata validation must reject a foreign stable column ID."); } catch (InvalidDataException) { }
+            File.WriteAllText(bad, UnityEngine.JsonUtility.ToJson(document));
+            try { await FPWorkbenchDocumentFile.LoadAsync(bad); Assert.Fail("Verified source admission must reject a foreign stable column ID."); } catch (InvalidDataException) { }
+            source.HasTypedSchema = false;
+            Assert.Throws<InvalidDataException>(() => source.Validate());
+            Assert.That(File.ReadAllBytes(source.SourcePath), Is.EqualTo(original));
+        }
         private string root;
         [SetUp] public void Setup() { root = Path.Combine(Path.GetTempPath(), "FPWorkbookTest-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root); }
         [TearDown] public void Teardown() { Directory.Delete(root, true); }

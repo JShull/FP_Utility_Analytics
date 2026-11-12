@@ -103,12 +103,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             using var sha = SHA256.Create(); Fingerprint = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(json))).Replace("-", "").ToLowerInvariant();
         }
         public bool TryGet(FPWorkbenchCell address, string original, out string value, out bool masked)
+            => TryGet(address, original, out value, out masked, out _);
+        public bool TryGet(FPWorkbenchCell address, string original, out string value, out bool masked, out FPWorkbenchEditKind kind)
         {
-            value = original; masked = false;
+            value = original; masked = false; kind = FPWorkbenchEditKind.Text;
             if (address.DatasetId != DatasetId) throw new InvalidOperationException("Correction snapshot source differs.");
             if (!cells.TryGetValue(address, out var cell)) return false;
             if (original != cell.Original) throw new InvalidDataException("Correction original-cell precondition differs.");
             masked = cell.Kind == FPWorkbenchEditKind.Masked;
+            kind = cell.Kind;
             value = masked || cell.Kind == FPWorkbenchEditKind.Missing ? "" : cell.Value;
             return true;
         }

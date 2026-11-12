@@ -35,14 +35,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         }
 
         public static Task<FPWorkbenchCsvDataset> ImportAsync(string sourcePath, string destination,
-            FPWorkbenchCsvProfile profile, CancellationToken cancellation = default, IProgress<double> progress = null)
+            FPWorkbenchCsvProfile profile, CancellationToken cancellation = default, IProgress<double> progress = null, IProgress<FPWorkbenchCsvPreview> preview = null)
         {
             var settings = (profile ?? throw new ArgumentNullException(nameof(profile))).Copy();
             string source = Path.GetFullPath(sourcePath), target = Path.GetFullPath(destination);
-            return Task.Run(() => Import(source, target, settings, cancellation, progress), cancellation);
+            return Task.Run(() => Import(source, target, settings, cancellation, progress, preview), cancellation);
         }
         private static FPWorkbenchCsvDataset Import(string path, string target, FPWorkbenchCsvProfile profile,
-            CancellationToken cancellation, IProgress<double> progress)
+            CancellationToken cancellation, IProgress<double> progress, IProgress<FPWorkbenchCsvPreview> preview)
         {
             cancellation.ThrowIfCancellationRequested();
             if (Directory.Exists(target) || File.Exists(target)) throw new IOException("Choose a new cache directory. Existing files are not overwritten.");
@@ -59,6 +59,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 string[] headers; long count = 0;
                 using (var source = OpenSource(path))
                 {
+                    if (preview != null) {
+                        SkipBom(source, profile);
+                        var prefix = FPWorkbenchCsvPreview.Read(path, new FPWorkbenchCsvRecords(source, profile, cancellation), cancellation);
+                        ValidateSource(path, bytes, ticks); preview.Report(prefix);
+                        cancellation.ThrowIfCancellationRequested(); source.Position = 0;
+                    }
                     hash = Hash(source, cancellation); source.Position = 0;
                     SkipBom(source, profile);
                     var parser = new FPWorkbenchCsvRecords(source, profile, cancellation);

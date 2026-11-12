@@ -19,6 +19,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             string source = Path.Combine(root, "source.csv"); File.WriteAllText(source, "x,depth\n0,1\n1,2\n2,3\n");
             var owner = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>(); FPWorkbenchHistogramWindow histogram = null;
             string cache = null; var ownerType = owner.GetType();
+            FPWorkbenchMemoryBudget.Reservation firstScan = null, secondScan = null;
             try
             {
                 owner.ShowUtility(); owner.position = new Rect(50, 50, 900, 650); ownerType.GetMethod("AddCsv", flags).Invoke(owner, new object[] { source });
@@ -41,7 +42,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 ownerType.GetMethod("ApplyWorkbook", flags).Invoke(owner, new object[] { loading.Result });
                 Assert.That(((IList)ownerType.GetField("sheets", flags).GetValue(owner)).Count, Is.Zero);
                 ((IDictionary)ownerType.GetField("admittedSources", flags).GetValue(owner)).Clear();
+                var resources = ownerType.Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchEditorResources");
+                var scans = (FPWorkbenchMemoryBudget)resources.GetField("Scans", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+                Assert.That(scans.TryAcquire(1, out firstScan), Is.True); Assert.That(scans.TryAcquire(1, out secondScan), Is.True);
                 ownerType.GetMethod("OpenSavedFigure", flags).Invoke(owner, new object[] { loading.Result.Document.Figures[0] });
+                Assert.That(ownerType.GetField("pendingSourceOpening", flags).GetValue(owner), Is.Not.Null);
+                Assert.That(ownerType.GetField("sourceOpening", flags).GetValue(owner), Is.Null);
+                ownerType.GetMethod("CancelSourceOpening", flags).Invoke(owner, null);
+                Assert.That(ownerType.GetField("pendingSourceOpening", flags).GetValue(owner), Is.Null);
+                ownerType.GetMethod("OpenSavedFigure", flags).Invoke(owner, new object[] { loading.Result.Document.Figures[0] });
+                firstScan.Dispose(); secondScan.Dispose(); firstScan = null; secondScan = null;
                 while (histogram == null && DateTime.UtcNow < deadline)
                 {
                     foreach (var candidate in Resources.FindObjectsOfTypeAll<FPWorkbenchHistogramWindow>())
@@ -61,6 +71,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             }
             finally
             {
+                firstScan?.Dispose(); secondScan?.Dispose();
                 if (histogram != null) { histogram.Close(); UnityEngine.Object.DestroyImmediate(histogram); }
                 owner.Close(); UnityEngine.Object.DestroyImmediate(owner);
                 if (cache != null && Directory.Exists(cache)) Directory.Delete(cache, true); Directory.Delete(root, true);

@@ -23,6 +23,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private HistogramSettings CaptureHistogramSettings() => new HistogramSettings { Bins = bins, FirstRow = firstRow, EndRow = endRow,
             Minimum = minimum, Maximum = maximum, InvalidPolicy = invalidPolicy, Density = density, Grid = grid, FitOnOpen = fitOnOpen };
         private string HistogramSettingsJson() => JsonUtility.ToJson(CaptureHistogramSettings());
+        private void ApplyPresentationPreset(string json)
+        {
+            var preset = FPWorkbenchHistogramPreset.Parse(json);
+            string before = HistogramSettingsJson();
+            density = preset.Density; grid = preset.Grid;
+            RecordHistogramSettings(before); Repaint();
+        }
         private HistogramSettings PublishedHistogramSettings()
         {
             if (string.IsNullOrEmpty(publishedSettings)) return null;
@@ -59,7 +66,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             if (histogramUndo.Json == histogramUndoObserved) return;
             histogramUndoObserved = histogramUndo.Json;
-            cancellation?.Cancel(); Observe(fitting); Observe(building); fitting = null; building = null;
+            cancellation?.Cancel(); ReleaseHistogramOperation();
             ApplyHistogramSettings(JsonUtility.FromJson<HistogramSettings>(histogramUndo.Json));
             var shown = PublishedHistogramSettings();
             bool sameQuery = result != null && shown != null && !fitOnOpen && bins == shown.Bins && firstRow == shown.FirstRow && endRow == shown.EndRow &&

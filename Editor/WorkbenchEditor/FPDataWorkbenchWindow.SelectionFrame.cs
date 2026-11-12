@@ -8,6 +8,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     public sealed partial class FPDataWorkbenchWindow
     {
         private Task<FPWorkbenchSeriesRowExtent> selectionFrameWork;
+        private Func<Task<FPWorkbenchSeriesRowExtent>> pendingSelectionFrame;
+        private FPWorkbenchMemoryBudget.Reservation selectionFrameMemory;
         private FPWorkbenchSeriesCache selectionFrameSeries;
         private Sheet selectionFrameSheet;
         private CancellationTokenSource selectionFrameCancellation;
@@ -20,17 +22,23 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 selectionFrameSheet = sheet; selectionFrameSeries = sheet.Series;
                 selectionFrameStart = sheet.Plot.StartX; selectionFrameEnd = sheet.Plot.EndX;
                 selectionFrameCancellation = new CancellationTokenSource();
-                selectionFrameWork = selectionFrameSeries.ReadRowExtentAsync(sheet.Selection.FirstRow, sheet.Selection.EndRow, selectionFrameCancellation.Token);
+                var series = selectionFrameSeries; var first = sheet.Selection.FirstRow; var end = sheet.Selection.EndRow; var token = selectionFrameCancellation.Token;
+                pendingSelectionFrame = () => series.ReadRowExtentAsync(first, end, token);
                 status = "Reading selected-row X endpoints from the plot cache…";
+                TryStartSelectionFrame();
             } catch (Exception ex) { error = ex.Message; CancelSelectionFrame(); }
         }
         private void CancelSelectionFrame()
         {
-            Cancel(selectionFrameCancellation); selectionFrameCancellation = null; Observe(selectionFrameWork); selectionFrameWork = null; selectionFrameSeries = null; selectionFrameSheet = null;
+            Cancel(selectionFrameCancellation); selectionFrameCancellation = null;
+            if (selectionFrameMemory != null) selectionFrameMemory.ReleaseAfter(selectionFrameWork); else Observe(selectionFrameWork);
+            selectionFrameMemory = null; pendingSelectionFrame = null; selectionFrameWork = null; selectionFrameSeries = null; selectionFrameSheet = null;
         }
         private bool TickSelectionFrame()
         {
-            if (selectionFrameWork == null || !selectionFrameWork.IsCompleted) return false;
+            bool changed = pendingSelectionFrame != null;
+            if (changed) TryStartSelectionFrame();
+            if (selectionFrameWork == null || !selectionFrameWork.IsCompleted) return changed;
             var work = selectionFrameWork; var sheet = selectionFrameSheet; var series = selectionFrameSeries; selectionFrameWork = null;
             try {
                 var extent = work.GetAwaiter().GetResult();
@@ -46,7 +54,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
             } catch (OperationCanceledException) { }
             catch (Exception ex) { error = "Selection framing failed; viewport retained. " + ex.Message; }
+            selectionFrameMemory?.Dispose(); selectionFrameMemory = null;
             selectionFrameCancellation?.Dispose(); selectionFrameCancellation = null; selectionFrameSheet = null; selectionFrameSeries = null; return true;
+        }
+        private void TryStartSelectionFrame()
+        {
+            try {
+                if (!FPWorkbenchEditorResources.TryStartRead(1024L * 1024, ref pendingSelectionFrame, ref selectionFrameWork, ref selectionFrameMemory))
+                    status = "Selection framing is waiting for shared memory/read capacity…";
+            } catch (Exception ex) { error = ex.Message; CancelSelectionFrame(); }
         }
     }
 }

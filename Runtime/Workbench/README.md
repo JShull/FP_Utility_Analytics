@@ -448,6 +448,306 @@ Shared-UTC validation: clean Unity compile and 104/104 standard Workbench tests 
 
 Logarithmic tick spacing is in decades; auto spacing bounds the returned tick count. Tick values remain positive and strictly increasing after representability filtering. Narrow intervals may have few/no ticks for an explicit spacing. The transform uses relative-log and small-delta expansions to preserve narrow ranges at large offsets, and avoids overflow for broad positive ratios. Exact endpoints are retained; interior coordinates remain subject to double quantization. These are presentation transforms and do not rewrite measurements or timestamp identities.
 
-The existing Editor plot settings/renderers still use linear axes. Wiring scale settings into scalar/dual-axis/scatter drawing, navigation, presets/Undo and saved metadata, with explicit nonpositive-sample/envelope handling, is the next integration step. This runtime helper alone does not complete logarithmic plot support.
+Scalar, shared-source overlay/dual-Y and scatter Editor views now expose independent linear/Log10 scale controls. Dual-Y sides retain separate scale choices. Drawing, picking, ticks and navigation use the declared transform; log zoom/pan operates in logarithmic space. Saved metadata, presentation presets and Undo preserve scale choices, while legacy documents default to linear. Scatter limits can be entered explicitly. Invalid or nonpositive log limits report an error rather than silently selecting a positive subset or modifying measurements.
+
+For Log-Y scalar summaries, bins with nonpositive minima are omitted and line continuity breaks. Mixed/nonpositive envelopes show an inline notice to zoom for individual samples. A mixed bin can contain positive observations, but its cache does not retain the minimum positive value; the whole bin is omitted rather than inventing that value. Histogram/3D logarithmic scales are not implemented.
+
+Integration validation: 108/108 standard Workbench Edit Mode tests passed in the connected Editor. Fixtures cover logarithmic navigation anchors, underflow rejection, cached mapping, constant-domain expansion, preset rejection without partial mutation, scale persistence, Undo and native scalar/scatter/dual-axis repaint paths. These checks do not establish pixel-level visual acceptance, scientific equivalence or Player/device qualification.
+
+## Right-Y presentation presets
+
+For overlays with a series assigned to the right axis, expand Figure settings to load/save a right-Y `.fpplot` preset. Loading uses only the preset's Y label, scale, tick spacing, grid and inversion. It retains destination Y limits/lock, shared-X controls, series appearance and axis assignments. Existing presentation presets are accepted, and presets saved here remain ordinary `.fpplot` files; the right-Y load action deliberately ignores their other fields. Left and right presentations are loaded separately rather than as a combined figure recipe.
+
+Locked nonpositive limits reject a Log10 preset before any settings change. Application participates in the right axis's presentation Undo/Redo. Native file-dialog interaction remains unqualified.
+
+Validation: clean connected Unity compilation and 110/110 standard Workbench tests passed, including destination preservation, atomic refusal and right-Y preset Undo/Redo.
+
+## Histogram presentation presets
+
+Histogram windows offer Load/Save histogram preset actions using versioned `.fphistplot` JSON, bounded to 1 KiB. These presets contain only density/count mode and grid visibility. They exclude source/correction/formula identities, row ranges, bin counts, numeric bounds and invalid-value policy. Applying a preset uses the displayed histogram result without rebuilding or reading the source, and participates in settings Undo/Redo. The shared Editor file helper performs strict UTF-8 reading and staged replacement; histogram and ordinary plot preset formats reject each other. Native OS dialogs remain unqualified.
+
+Validation: clean connected Unity compilation and 111/111 standard Workbench tests passed, including malformed/foreign/oversized preset rejection and native histogram application/Undo/Redo retaining the same result without a rebuild.
+
+## Frozen-column runtime contract
+
+Column projections can retain up to eight frozen visible stable IDs. `ResolveWindow` returns those columns in display order followed by a bounded window of non-frozen columns, without duplicate source ordinals. Its `first` parameter indexes only non-frozen columns; it is not the existing Editor's visible-column offset. A window is limited to 32 columns and must leave one scrolling slot when non-frozen data exists. Hiding a column unfreezes it; schema transitions remove deleted IDs and retain surviving identities. Older projection JSON defaults to no frozen columns.
+
+The Editor now integrates this contract. Right-click a column header to freeze/unfreeze it. Frozen columns are tinted and remain on the left while column navigation pages the non-frozen data. Their displayed widths share at most half the table width while scrolling columns exist, contracting on narrow windows without rewriting saved manual widths. Navigation reports scrolling counts plus the frozen count. Hiding a frozen column unfreezes it; header actions participate in projection Undo and save with column preferences/workbook metadata.
+
+Projected page reads, stable source-cell actions, Shift-click ranges and linked source-row reveal use the frozen viewport mapping. For frozen views, a Shift-click anchor outside the current resolved window must be restarted with a visible cell. Frozen mappings are cached until the projection/offset changes. Native context-menu interaction and a full domain-reload UI session remain manual qualification items.
+
+Validation: 112/112 standard Workbench tests passed for the initial contract, followed by 3/3 focused projection tests after strengthening legacy/bounds and projected-page coverage. The latter verifies frozen calculated/source column resolution with corrections and unchanged source bytes.
+
+Editor integration validation: clean connected Unity compilation and 112/112 standard Workbench tests passed, with the native window fixture extended for pinned page contents, width budget, Undo/Redo, range order, linked reveal and workbook metadata round trip.
+
+The strengthened native fixture also passed a serialized-window recreation check: working metadata is captured, the original window is destroyed, a new window deserializes it, reopens the cached source and displays the same frozen columns/scrolling offset with expected source values. This focused test passed after clean compilation. It exercises serialization/lifecycle restoration without forcing a project-wide domain reload; actual domain-reload and manual context-menu/grip qualification remain separate.
+
+## 3D appearance presets and Undo
+
+Expand Appearance presets in a 3D point window to load/save `.fp3dplot` JSON (version 1, at most 2 KiB). Presets carry finite RGBA [0,1] and point size [1,32] pixels. They exclude camera orbit/pan/zoom/projection, input bindings, correction/formula snapshots, clipping and point budgets. Applying a preset changes appearance on the existing renderer without rebuilding point data. Color/size controls and preset application participate in appearance-only Undo/Redo; transient Undo state is disposed with the window. Figure/workbook snapshots retain the resulting appearance as before. Native file-dialog interaction remains unqualified.
+
+Validation: clean connected Unity compilation and 113/113 standard Workbench tests passed. Coverage includes preset format/bounds, native application and Undo/Redo with renderer/camera/query preservation, saved appearance and existing rendered-pixel/resource-release checks. These are software checks, not scientific or device qualification.
+
+## Explicit-size 3D PNG export
+
+The 3D Appearance presets foldout includes PNG width/height and Export PNG. Choose a new `.fpfigure` output folder: it receives `figure.png` and `provenance.json` together through sibling staging and no-overwrite publication. Source files and prior outputs are retained. The image renders the current completed point snapshot and appearance with a separate camera at the requested aspect ratio, without resizing the window or changing its camera. It contains the point visualization/background, excluding Editor controls, labels and orientation gizmos.
+
+Dimensions are 64–4096 per axis with at most 4,194,304 pixels total; PNG bytes are bounded to 32 MiB and provenance to 4 MiB. Rendering/readback is an explicit main-thread capture action deferred outside OnGUI; temporary graphics resources are released before worker encoding/publication (see the background-service integration below). These are allocation/work bounds, not measured latency guarantees. Export is disabled while a point update is active.
+
+Provenance records dimensions, PNG SHA-256 (base64), source identity/path, completed figure snapshot, matching/rendered counts and sampling status, local origin/unit scale and maximum local conversion error. It describes the sampled view, not a full-resolution replacement for the source dataset. 2D/histogram PNG export, publication labels/legends, cancellation and manual file-dialog qualification remain open.
+
+Validation: clean connected Unity compilation and 113/113 standard Workbench tests passed. The native point-preview fixture decodes the exported 640×480 PNG, checks colored pixels, verifies provenance/hash and preview camera/active-target preservation, and rejects existing destinations and oversized images. Graphics teardown checks remain green.
+
+## Histogram PNG export
+
+Histogram windows now expose Image export with explicit dimensions. A separate offscreen renderer draws the completed histogram's bars, linear axes, ticks, grid choice, count/density label and source-column title using Unity meshes/text; it reads no source rows. Export uses the same new `.fpfigure` folder convention with PNG and provenance staged together, never overwriting existing output. Provenance includes exact completed edges/counts, inclusion/exclusion totals, the published figure query/snapshots and a PNG SHA-256. Invalid draft bin/bound controls do not replace the published query in the export.
+
+Bounds: width 320–4096, height 240–4096, at most 4,194,304 pixels; PNG 32 MiB, provenance 4 MiB. Rendering/readback is an explicit main-thread capture action deferred outside OnGUI; encoding/publication uses the background service below. Capture is disabled during a histogram update. No new external dependency is added. Fonts use Unity's built-in font; arbitrary glyph coverage, long-title layout and publication typography need further qualification. Scalar/overlay/scatter images and cancellable/background encoding remain open.
+
+Validation: clean connected compile and 113/113 Workbench tests passed. The native histogram fixture decodes a 640×480 image, checks bar/label pixels, query provenance and no-rebuild behavior, and rejects overwrite. A generated Depth (m) histogram was also visually inspected after correcting its label scale. This does not establish image parity with MATLAB or broad export/platform acceptance.
+
+## Scalar figure PNG export
+
+Floating scalar figure windows expose Image export using the same explicit-size `.fpfigure` PNG/provenance convention (320–4096 width, 240–4096 height, at most 4,194,304 pixels). The image uses the completed cached view: it preserves line/step/point presentation, extrema envelopes, gaps, inversion, linear/log axes, declared limits, ticks, units/labels and UTC-origin information. Enlarging the export does not reread or increase the cached sample resolution. The shared offscreen image canvas now serves histogram and scalar images, with bounded meshes/text and deterministic cleanup.
+
+Export refuses an active/failed query or a range whose cached view is stale. Log envelopes follow the viewer's existing nonpositive/mixed-bin omission policy; aggregation/omission counts are explicit in image notices and provenance. Metadata includes source-sheet/binding/settings, frozen correction/calculation snapshots, displayed-bin count, UTC origin and PNG hash. Image errors leave the figure controls available. Rendering/readback remains on the main thread, with bounded worker encoding/publication; manual dialogs, overlay/dual-axis/scatter images, arbitrary glyph/long-label layout and cancellation remain open.
+
+Validation: 114/114 standard Workbench tests passed, then 2/2 focused figure tests passed after isolating export errors from source errors, with clean compilation. Native export fixtures decode all three styles with log Y and verify metadata/no-rebuild/stale-range refusal. A controlled pixel fixture distinguishes a genuine gap from a connecting segment and checks mixed log-bin omission. A generated inverted depth profile was visually inspected. This does not establish pixel parity with other software or scientific/platform qualification.
+
+## Scatter PNG export
+
+Ordinary and aligned scatter windows now expose Image export through the shared bounded offscreen canvas. Images retain completed-view bounds, independent linear/log scales, inversion, markers/color, ticks and labels; edge markers are clipped to the plot. Export refuses active/failed or stale range/budget queries and never increases sample resolution implicitly. The `.fpfigure` image/provenance pair uses the same dimension/byte limits, bounded worker encoding/publication and no-overwrite staging as scalar export.
+
+Provenance records sampled/matching/invalid totals, exact displayed row IDs in the view dataset, applied bindings/settings/point budget and PNG hash. An unapplied invalid-value-policy draft does not replace the completed cache policy in saved/exported figure descriptors. Aligned exports also retain both original source references, coverage information and the frozen alignment recipe; displayed rows identify the derived view, not original source ordinals. The references/recipe provide the connection to both originals. Camera/query state is unchanged, and image errors leave controls usable.
+
+Validation: clean connected Unity compilation and 114/114 standard Workbench tests passed. Native fixtures decode sampled scatter image dimensions/pixels, verify sampled rows/totals and applied-policy provenance, retain the existing view, and verify both original references/recipe for aligned exports. A generated scatter image was visually inspected. Overlay/dual-axis image export, long-label/glyph qualification, cancellation, manual dialogs and device/performance acceptance remain open.
+
+## Overlay and dual-axis PNG export
+
+Overlay Image export now preserves all completed shared-source series, colors, line/step/point styles, envelopes/gaps and independent left/right axis settings. The scalar and overlay paths share series rendering. Images include side-specific ticks/labels and a color-keyed legend marked L/R, with reserved footer space for up to eight entries. A right-only assignment does not require a valid unused left log domain. Invalid active-axis log limits refuse output; source measurements are unchanged.
+
+Export requires a completed coherent viewport and uses the existing cached bins. New `.fpfigure` folders contain PNG/hash and figure provenance including source/correction/formula snapshots, series IDs/colors/side assignments, both axis settings, per-series bin counts, UTC origin and aggregate/log-omission indicators. Dimensions are 440–4096 width, 360–4096 height, at most 4,194,304 pixels; prior PNG/provenance byte bounds and no-overwrite staging apply. Rendering/readback remains explicit and main-thread bound; encoding/publication uses the background service below.
+
+Validation: clean connected Unity compile and 114/114 standard Workbench tests passed after sharing the scalar/overlay renderer. Native fixtures decode all three styles with log-left/linear-right axes, verify saved side/scale/color metadata and unchanged view, cover right-only assignment, and reject an invalid right log domain without output. A generated dual-axis image was visually inspected. Initial PNG paths now exist for scalar, overlay/dual-axis, histogram, ordinary/aligned scatter and 3D; full export acceptance still requires typography/long-label/glyph layout, cancellation, native dialogs and platform/performance qualification.
+
+## Background image publication service
+
+`FPWorkbenchImageExport.PublishAsync` is a runtime service with no Editor references. It takes a caller-captured RGBA8 `Color32[]` and a plain serializable metadata subclass of `FPWorkbenchImageProvenance`. It snapshots both inputs before returning a worker task, encodes PNG, hashes it and stages PNG/provenance together in a new `.fpfigure` folder. Only one service job is admitted per application domain; another request fails before copying its inputs rather than queuing another large buffer. Limits are 4096 per axis, 4,194,304 pixels, 32 MiB PNG and 4 MiB JSON. The owned pixel clone is at most 16 MiB; the caller's readback buffer and graphics resources remain separate responsibilities.
+
+The worker uses Unity's documented [thread-safe array PNG encoder](https://docs.unity3d.com/zh-cn/engine/6000.6/script-reference/unityengine/imageconversion/encodearraytopng) and [background-capable JSON serialization](https://docs.unity3d.com/ja/current/ScriptReference/JsonUtility.ToJson.html). Payloads must be plain data, with no Unity objects or main-thread callbacks. No new packages are required; there was no relevant package/project Research folder for this engineering change.
+
+Cancellation is checked before/after native encoding, during 64 KiB writes and before folder publication. An in-progress native encode cannot be interrupted; cancellation after the publication commit does not retract a valid output. Failed/cancelled jobs clean their staging directory and release admission. Results report worker thread ID, encode/publish durations and byte count for later measurement; no latency/performance acceptance is claimed.
+
+Validation: clean connected Unity compilation and 117/117 Workbench tests passed. New fixtures verify off-caller-thread execution, decoded RGBA pixel orientation/content, caller-buffer/metadata mutation isolation, exclusive admission, precommit cancellation cleanup, successful subsequent admission, bounds/metadata refusal and no overwrite. Editor adoption is now implemented as described below. These tests establish worker behavior; target-size end-to-end latency remains unqualified.
+
+## Editor worker integration and cancellation
+
+All scalar, overlay, histogram, scatter/aligned-scatter and 3D export actions now use `FPWorkbenchEditorImageJob` and the runtime worker. Main-thread rendering/readback captures the current completed view; the texture/temporary graphics are released after the worker snapshots the pixels/metadata. PNG encoding, hashing and staged file publication then run off the Editor thread. Existing output formats and provenance fields remain intact through the shared runtime provenance base.
+
+One active image worker is admitted across these windows. Other export buttons disable during admission; the job adapter also checks before capture to reject queued button callbacks. Active jobs show status and Cancel image export even when the export foldout closes. Completion reports main-thread capture, worker encode and publication timings, with an explicit Show exported image folder action. Errors/cancellation retain usable figure controls and do not change the data/plot/camera.
+
+Closing a window or beginning script reload cancels the owned token, detaches Editor callbacks and observes any worker fault without blocking the main thread. An encoder already executing finishes its native step before cancellation is observed; an already committed pair remains valid. Pending jobs are cancelled rather than resumed after reload. Rendering/readback and request cloning still require main-thread time; this is not an end-to-end responsiveness or latency guarantee.
+
+Validation: clean connected Unity compile and 120/120 standard Workbench tests passed. Existing native image fixtures now await worker tasks and recheck all exported plot families, pixels/metadata/hash and retained view/camera settings. New adapter tests verify worker completion/status metrics, disposal cancellation/callback detachment and actual figure teardown cancelling its owned pending job. Actual project-wide domain reload, manual buttons/dialogs and large-image/target-device profiling remain acceptance work.
+
+## Explicit typed-schema foundation
+
+`FPWorkbenchTypedSchema` declares physical columns by verified dataset ID, stable column ID and ordinal. Compiling validates those identities and freezes per-column parsers plus a definition fingerprint. Bounds are 4,096 declarations and 1 MiB serialized definition; each column has at most 16 missing tokens of at most 64 characters. Units are metadata only, without implicit calibration or conversion. The fingerprint conservatively includes declaration details, not just mathematically equivalent interpretation.
+
+Types are text, signed/unsigned 64-bit integer, finite double, boolean and complete UTC timestamp. Integer parsing retains the exact declared integer range without a double conversion; larger identifiers should remain text. UTC uses the existing complete-date format validator and integer ticks, with explicit UTC interpretation and no inferred local zone/current date. Real parsing uses an explicit named culture (invariant by default), decimal/exponent syntax and no thousands separators. Booleans use explicit true/false tokens. Whitespace trimming and ordinal case-insensitive token comparison are opt-in.
+
+Empty fields are not automatically missing: declare an empty missing token where intended. Actual null input is missing. Otherwise missing tokens, invalid input and valid values stay distinct. A mask changes the effective state while retaining raw field text, parsed state and underlying typed value for inspection. Numeric fields are meaningful only for their matching type and valid parsed state. Framework double parsing is a declared floating-point representation, not an exact decimal/identifier contract.
+
+Validation: clean connected compile and 124/124 Workbench tests passed. Fixtures cover signed/unsigned limits and >2^53 integer IDs, missing/invalid/masked distinctions, explicit culture/whitespace/grouping/boolean policies, nonfinite rejection, one-tick UTC differences, invalid dates/formats, definition snapshot isolation, fingerprints, foreign schema refusal and unchanged source bytes.
+
+This is a runtime parsing foundation. Source-document persistence/admission is now implemented below; authoring, formula/plot/alignment/export interpretation and schema-qualified numeric cache revisions are not wired yet. Typed edit admission is described below. Typed table classification is implemented below. Existing raw tables and numeric products retain their current behavior; no typed scientific pipeline acceptance is claimed.
+
+## Typed schemas in saved source metadata
+
+Registered sources can now retain an explicitly present typed schema (`HasTypedSchema`/`TypedSchema`). Source validation rejects contradictory presence markers or foreign dataset revisions and snapshots bounded declarations. Workbook admission compiles them against the verified physical source schema, so a structurally valid document with foreign column IDs cannot be admitted. Old source records without a declaration retain their prior behavior; absent declarations are not inferred.
+
+Declarations survive closed-sheet workbook saves, Editor source registration refreshes and content-identical moved-source recovery. Alignment windows copy declarations with their source metadata and verify both sides, including a shared-cache alias, without claiming that the alignment algorithm consumes the types yet. The raw dataset identity remains separate from the typed definition fingerprint; changing interpretation does not rewrite recordings.
+
+Validation: clean connected Unity compilation and 125/125 standard Workbench tests passed. Fixtures verify closed-sheet save/load/fingerprints, actual-column mismatch rejection, presence contradictions, moved-source preservation, Editor refresh retention and alignment-source snapshot isolation. Typed authoring/numeric-consumer/cache-revision integration is still required before users can rely on these declarations for analysis. Table classification is implemented below.
+
+## Typed virtual table pages
+
+`FPWorkbenchTableView` optionally accepts an immutable compiled physical schema. Declared physical cells retain both original and effective typed classifications alongside unchanged raw/display strings and stable source IDs. Undeclared and calculated cells retain their existing contracts; calculated values still report formula status rather than an invented physical declaration. Typed page fingerprints are separate from source/formula/correction revisions.
+
+Explicit Missing corrections override token parsing to the missing state. Masks preserve the original field's parsed state/value beneath the masked effective state, even though the legacy display layer emits empty text for masked cells. No classification rewrites the source or rounds an integer through double. Pages remain bounded to 256 rows/32 columns and the existing retained-text allowance; optional typed-cell objects add bounded fixed payload and are not included in that text-only budget.
+
+Editor table construction/page requests now carry the compiled schema and reject stale typed revisions, including when formulas, projections or frozen columns are also active. Missing/invalid declared cells have distinct tints and type/state tooltips; their literal field text remains displayed. Original/Effective view selection continues to choose which correction snapshot is read. Standalone readers classify malformed supplied corrections as invalid rather than coercing them. Editor/workbook typed correction admission is now enforced below; authoring and numeric consumers remain pending.
+
+Validation: clean connected compile and 126/126 Workbench tests passed. Runtime fixtures cover projected exact unsigned IDs, explicit decimal culture, original/effective corrections, masked invalid source values, explicit missing quality, boolean values, schema-revision changes, untyped legacy behavior and source immutability. The native source window fixture verifies typed-page publication with the expected schema revision/value. Formula/plot/alignment/export numeric interpretation still requires schema-aware integration.
+
+## Typed correction admission
+
+Compiled schemas validate proposed source-column overrides and whole correction sets. Editor commits, including imported changes, validate all candidate corrections against the current declared source before mutation or Undo registration. Undo/Redo refuses a now-invalid target under the current schema while retaining the last applied state. Workbook admission and source recovery also validate active corrections after source/precondition verification. This does not reject invalid raw measurements: those remain inspectable and may be masked or marked missing.
+
+Ordinary values must parse as valid or explicitly declared missing tokens. Missing/Masked remain explicit quality actions for every type. The correction storage kind retains its existing contract too: Number/Integer/Boolean use their legacy invariant/signed/bool formats; choose Text input for declared decimal cultures, custom boolean tokens or full unsigned values. Text storage does not bypass declared type validation. Values are never silently reformatted or converted.
+
+Validation: clean connected Unity compile and 127/127 standard Workbench tests passed. Fixtures reject unsigned overflow/negative overrides and invalid real/boolean tokens, accept declared tokens/quality actions, reject invalid active workbook corrections and verify Editor rejection leaves corrections unchanged plus valid Undo/Redo preserving row/viewport. Source immutability checks remain green. Schema authoring and frozen-figure/formula/plot/alignment/export schema snapshots/cache revisions remain open; those numeric consumers are not yet type-aware.
 
 Axis foundation validation: clean Unity compile and 106/106 standard Workbench tests passed after reopening the authorized matching Editor. New fixtures cover exact endpoints, representative inverse round trips across the positive double domain, four-ULP ranges near 1e300, overflow-safe linear normalization, major/explicit/bounded log ticks and invalid-domain/spacing rejection. The representative round-trip checks use a 1e-12 normalized tolerance and narrow-range fraction checks 1e-14; they do not establish universal error bounds for quantized interior coordinates or any rendered log-view behavior.
+
+### Typed formula snapshots
+
+`FPWorkbenchFormulaProgram.Compile(dataset, formulas, compiledSchema)` freezes explicit physical types, decimal culture, missing tokens and units into the returned `Definition`. Restoring that definition retains its parsing contract and fingerprint. Existing untyped definitions retain legacy parsing. Declared text, boolean and UTC values do not implicitly become arithmetic numbers; integer magnitudes beyond 2^53 report IntegerPrecision. Quality Missing/Masked inputs propagate Missing. Conflicting known formula/schema units reject compilation. Invalid typed tokens report NonNumeric.
+
+Point caches using a typed program include its fingerprint even for physical-only coordinates. Histograms already read through program evaluators. This API does not automatically attach registered source declarations to every Editor formula/plot/alignment path; that integration and schema authoring remain pending. Frozen historical definitions must retain their own snapshot rather than silently adopting current declarations. Adding snapshot fields can regenerate old formula-qualified caches safely.
+
+Validation: connected Unity compilation and 130/130 standard Workbench tests passed, covering culture/quality/units, exact integer boundaries, snapshot isolation/roundtrip, contradictory metadata, boolean/UTC refusal, legacy parsing and physical scatter cache separation.
+
+### Typed scalar cache inputs
+
+When supplied a typed formula program, `FPWorkbenchSeriesCache.BuildAsync` reads physical numeric X/Y through that program's evaluator and includes its fingerprint even without derived axes. Invalid/non-numeric Y becomes a missing observation; invalid numeric X fails the build rather than inventing coordinates. Correction preconditions apply to original field text before declared parsing. UTC date/time axes continue using the explicit SeriesBinding format/date-column contract. Untyped physical axes retain existing behavior. The Editor's source-wide schema propagation is a separate remaining integration task.
+
+Physical figure sessions now invalidate on a changed or removed typed schema, even when no calculated axis is selected. An unchanged program is a no-op. Verification: 131/131 standard tests passed after scalar correction/failure cleanup checks; subsequent session invalidation checks passed with clean compilation and 9/9 focused series tests. The blocking NUnit async assertion used during development was replaced with direct awaited exception checking; the affected Editor was restarted and validation completed.
+
+### Editor typed-program propagation (2026-11-12)
+
+Active sheet schema construction now compiles registered physical declarations into its table/plot program even when no calculated columns exist. New scalar/overlay/scatter/3D windows receive that program through existing paths. Physical histogram creation now retains it as well, including its saved figure snapshot; reopening retains the saved interpretation. Applying calculation definitions validates against the active source declarations before committing. Historical frozen figure definitions are not replaced with current declarations.
+
+Validation: clean connected compilation; 132/132 standard Workbench tests passed, including native typed physical histogram count/fit and saved reopening. A subsequent 1/1 focused Editor fixture verifies physical-only source propagation. Remaining work includes schema authoring/Undo, aligned products, admission consistency and UTC contracts. These notes supersede earlier active-sheet/histogram propagation deferrals only.
+
+### Typed aligned values (2026-11-12)
+
+Alignment-window admission now compiles independent registered type declarations into each side's value program, including a source with no calculated columns. Existing aligned value fingerprints and recipes retain those program snapshots, so deleting and rebuilding products preserves declared cultures and missing tokens. Key matching continues to use the explicit alignment key policy; no implicit type conversion, unit conversion or resampling is introduced.
+
+Connected Unity compilation and 133/133 standard tests passed. Coverage includes independent de-DE/invariant values, missing fields, deleted-product regeneration from immutable recipes and native alignment-window snapshot/export/reopen checks. Typed schema authoring and broader key/admission contracts remain pending.
+
+### Authoring column declarations
+
+In the Workbench sidebar, expand **Column types and missing values**, select a physical source column, and choose its declared type. Set units, explicit numeric culture (blank means invariant), UTC format or boolean tokens as applicable. Whitespace trimming and token case handling are opt-in. Set the missing-token count, then enter each exact token; an empty token field declares empty text missing. Use **Apply type** or **Clear type**. Data files are never rewritten by these actions.
+
+Apply validates all current source corrections and dependent formula units before committing. Existing invalid raw fields remain visible. Type declarations and calculations share one atomic Undo payload (2 MiB UTF-8 maximum); Undo/Redo is validated before installation and refuses incompatible state without partial mutation. Current sheets/plots refresh, while previously frozen figures retain their own definitions. Workbook saving retains declarations. The explicit UTC plot/alignment key bindings still own their respective coordinate/key policies.
+
+Validation: clean connected Unity compilation and 134/134 standard tests passed. The native authoring fixture covers rejected corrections, Apply/Undo/Redo, immutable draft ownership, conflicting units, Clear/Undo with matching formula/schema snapshots, retained row position, persistence and source byte preservation. Basic authoring is now integrated; broader admission, performance and platform acceptance remains open.
+
+### Active source admission
+
+`FPWorkbenchSourceDocument.CompileProgram(dataset)` compiles active formulas together with registered type declarations against the verified physical source. It returns a physical-only typed program when no calculated columns exist, or null for an entirely undeclared source. Presence-marker contradictions reject compilation. Workbook admission, same-content relinking, source opening, active table setup and alignment setup use this shared path. Structural validation now rejects malformed physical IDs and active type/formula unit conflicts early; actual source admission still checks actual column bounds and correction preconditions. Frozen figure/recipe definitions continue using their own snapshots.
+
+Validation: clean connected compilation and 135/135 standard tests passed; a final presence-marker check passed in the 18/18 focused document suite. Coverage verifies explicit culture/units after save/load and relinking, physical-only sources, unit conflicts and unchanged original source/workbook state. This establishes consistent active-source interpretation, not scientific equivalence, complete key/UTC integration or target-platform performance.
+
+### Shared table page accounting
+
+`FPWorkbenchMemoryBudget(limitBytes, maximumWorkers)` is a caller-owned, thread-safe reservation ledger. `TryAcquire` refuses requests without creating a queue or starting work. A reservation's `Complete(retainedBytes)` releases worker/scratch capacity while retaining result accounting; `Dispose` releases it once. Cancellation must retain the reservation until its worker actually terminates. Oversized requests and invalid handoffs reject rather than exceeding the configured account.
+
+Workbench Editor windows share a domain-scoped 256 MiB table-page account and at most two page workers. Admission estimates 8 MiB for a bounded page plus record/parser scratch (8 times the configured record bound plus column overhead). Publication accounts retained UTF-16 characters plus row/cell overhead; replacement/close releases it. Stale or cancelled tasks release only at termination. Sidebar counters show accounted reservations and page reads. A lifecycle guard prevents already-captured update callbacks from starting work after window close.
+
+These estimates are not measured process heap, GC residency or GPU memory limits. Imports, plot/geometry payloads, direct runtime callers, clipboard/export buffers and disk-cache quota/LRU policies remain separate pending integrations. No latency or total-RAM qualification is claimed. Verification: clean connected compilation and 138/138 standard tests passed; 7/7 focused window tests also passed with post-run bytes/workers/leases observed at zero. Tests cover concurrency, refusal, retained handoff, invalid/double operations, cancelled pending ownership, page publication/resizing and late callbacks after close.
+
+### Scalar query reservations
+
+`FPWorkbenchFigureSession` accepts an optional caller-owned memory budget. Budgeted sessions require at least 2 MiB; each 512-bin viewport query reserves 1 MiB before dispatch, then shrinks to a retained-bin estimate on coherent publication. `WaitingForMemory`/`IsBusy` report deferred admission without spawning queued tasks. Replacing/clearing a view releases its account; cancelled/stale tasks remain accounted until terminal. `Reservation.ReleaseAfter(worker)` transfers cleanup without blocking and observes worker faults.
+
+Editor registry-owned scalar sessions and Workbench table reads now share the same domain-scoped 256 MiB/two-read account. Embedded and detached views already share session ownership, so retaining another view does not duplicate result accounting. Final-owner close cancels workers and releases retained/pending reservations safely. Sidebar counters are named View reservations and Admitted reads to reflect the shared scope.
+
+Clean connected compilation and 139/139 standard tests passed. Coverage checks capacity deferral, shared owners, replacement and terminal cleanup. After the full suite, bytes/workers/leases were all zero; the accounted peak was 17,826,560 bytes. These are ledger values, not measured Unity/CLR/GPU memory. Source-cache construction, overlays/spatial/histogram products, geometry/export/clipboard buffers and disk-cache quotas/LRU still need integration; no representative latency or platform performance claim is made.
+
+### Overlay query accounting
+
+Overlay Editor viewport queries now reserve 8 MiB in the same 256 MiB/two-read account used by tables and scalar sessions. A completed coherent response shrinks to retained-series/bin estimates. Capacity refusal reports Waiting for shared view memory/read capacity without launching a queued job. Rebuild/close releases retained data; stale/cancelled/faulted pending tasks release when terminal, and a late callback cannot restart reads after close.
+
+Runtime overlay queries read series sequentially and publish only after all responses have matching source/range/revisions. This prevents one admitted overlay from launching eight simultaneous disk workers; it is not a claimed latency improvement. Typed physical series now use their actual cache/program fingerprints, including when no calculated axis is selected.
+
+Clean connected compilation and 141/141 standard tests passed. Coverage adds typed decimal/missing overlays and native capacity deferral/resumption/close cleanup. Post-suite accounted bytes/workers/leases were zero. The pressure fixture intentionally reached the 256 MiB reservation limit; that value is not measured RAM. Spatial/geometry, histogram/export/clipboard, source-cache construction and disk quota/LRU integration remain pending.
+
+### Spatial and geometry reservations
+
+Scatter Editor queries reserve 16 MiB before sampling and shrink to retained point estimates. The 3D window now separates source-cache construction from query/preparation/upload: the latter reserves 64 MiB and publishes estimated retained raw/prepared point and readable mesh/GPU payload only after upload succeeds. Existing geometry remains accounted until replacement. Both paths defer allocation when shared capacity is unavailable, release stale/cancelled work on termination and block late callbacks after close.
+
+Cancel point update applies to every 3D update stage, including waiting for memory, and preserves the previous batch/renderer. Whole-source construction is still outside interactive read admission. Geometry byte counts are estimates; render textures, driver allocation, GC residency and actual process/GPU usage are not established by the ledger. Scheduler priority/fairness, histogram/export/clipboard buffers and disk quota/LRU remain pending.
+
+Verification: clean connected compilation and 142/142 standard tests passed. The final cancellation change passed the focused spatial-pressure fixture (1/1) and native 3D rendering/export fixture (1/1). Coverage checks exhausted-capacity deferral without point/mesh allocation, resumed publication, replacement/close, cancellation retaining old geometry and late callbacks. Post-test bytes/workers/leases were zero. No representative-data latency or platform-memory qualification is claimed.
+
+### Histogram scans
+
+Histogram fit and count passes now use shared byte reservations and a separate two-scan admission limit. Long histogram reads therefore do not occupy the two interactive page/plot admission slots. Each scan reserves 1 MiB plus parser/record estimates; successful histogram publication shrinks that account to retained bin/edge estimates. `Reservation.Reduce` supports reducing retained accounting after a separately admitted scan completes. These remain accounting models, not process-RAM measurements.
+
+Capacity refusal leaves a pending request without queued tasks. Byte refusal rolls back its scan token. Cancel, Undo/Redo and close transfer active cleanup to terminal workers; cancelling a pending pass retains the previous result. Late callbacks cannot restart a disabled histogram window. Sidebar Background scans counters expose the separate admission class.
+
+Clean connected compilation and 143/143 standard tests passed. Native coverage checks scan saturation with interactive admission still available, resumed fit/count, byte-pressure rollback, pending cancellation, result retention and close cleanup, plus existing histogram Undo/reopen/export behavior. Post-suite shared bytes/workers/leases and scan workers/leases were all zero. Other whole-source scans and image/clipboard/export buffers still need adoption; disk quotas and representative performance/platform qualification remain open.
+
+### Owned disk-cache store
+
+`FPWorkbenchDiskCacheStore` is a caller-owned runtime service for a dedicated cache root. It does not adopt or clean legacy caches. Open it with a byte quota, reserve an estimated write, publish only generated cache files into its unique destination, then commit an explicit relative-file list. A write reserves its estimate plus 1 MiB manifest overhead; commit rejects excess or undeclared files. The service cannot enforce an OS quota during arbitrary caller writes. Failed/uncommitted output stays unowned/protected and counts against subsequent inventory.
+
+```csharp
+using var store = await FPWorkbenchDiskCacheStore.OpenAsync(managedRoot, 4L * 1024 * 1024 * 1024, token);
+using var writer = await store.ReserveAsync(maximumIndexBytes, token);
+var data = await FPWorkbenchCsvDataset.ImportAsync(csvPath, writer.DirectoryPath, profile, token);
+await writer.CommitAsync(new[] { "dataset.fpwm", "rows.fpwi" }, token);
+if (!store.TryPin(writer.Id, out var reader)) throw new System.IO.IOException("Cache entry unavailable.");
+using (reader) { var page = await data.ReadPageAsync(0, 16, 0, 2, token); }
+await store.FlushAsync(token);
+```
+
+Keep a pin for every operation/view using an entry, and await operations/release leases before disposing the store. `TryPin` does no filesystem work and is not a substitute for dataset-content verification. `TrimAsync` removes least-recently-used unpinned entries only when their owned file set and hashes remain unchanged. Unexpected/modified files, unowned/corrupt directories and linked paths are protected/refused; protected/pinned content can prevent satisfaction of the quota. It deletes declared files individually and only their empty declared parent directories. Cancellation is observed between evicted entries. `FlushAsync` persists monotonic recent-use order, including after clock rollback.
+
+Catalog bounds are 1,024 entries/16,384 files, with at most 1,024 declared files per entry and 240-character relative paths. These are application-accounting bounds, not measured process-memory guarantees. Seven store tests pass within the 158/158 standard suite, including quota/pins, ownership/path protection, restored LRU, cancellation and terminal commit cleanup. No new assembly dependency was needed.
+
+Normal Workbench imports are not yet connected to this store. Editor configuration, active-view pins, derived-artifact ownership updates and index regeneration after eviction remain required before enabling automatic eviction for those paths. Existing qualification caches remain untouched.
+
+### Early import preview
+
+`FPWorkbenchCsvDataset.ImportAsync` accepts an optional final `IProgress<FPWorkbenchCsvPreview>` argument. Reporting occurs from import work before full-file hashing/indexing; use a thread-safe receiver or explicitly chosen dispatch context. The immutable prefix retains at most 32 rows/32 columns/512 Ki UTF-16 characters, preserves quoted/multiline values, and exposes text-limit status. It carries no verified dataset identity or total-row count. The full import still validates every record and source content before publishing its cache.
+
+Workbench imports show the prefix as explicitly unverified/read-only until verification completes. The panel renders up to 12 rows/8 columns and labels shortened cell displays. Editing and plotting remain unavailable before admission. Preview delivery uses a closeable inbox; completion/failure/cancellation/close clear it, and late callbacks cannot restore closed state. Preview memory belongs to the active import reservation.
+
+Clean compilation and 151/151 tests passed. Real Windows-1252 data also showed the prefix in the native Editor and then the verified 487,006-row/34-column table. These are functional results, not a representative performance or MATLAB-equivalence claim. Disk quota/LRU and the other finish criteria remain open; independent scientific references/tolerances are not yet available.
+
+### Auxiliary reads and metadata operations
+
+Selection-to-plot framing, alignment pair pages and aligned original-row lookup use shared interactive byte/worker admission. Pending requests create no task, keep frozen inputs, and preserve existing stale-result checks. Pair-page publication retains a reduced array reservation; replacements and close release it. Active cancelled work retains its reservation until termination.
+
+Workbench save and correction-file import/export now acquire background/payload capacity before metadata serialization or source validation. A refusal starts no worker and creates no output; retry after capacity returns. Correction import accounts for the largest sequential source parser and retains its existing frozen-base conflict check. Replacing the workbook cancels correction operations owned by the prior context.
+
+The standard suite passes 148/148 with pressure/recovery, retained viewport/page, pending-reveal close, correction-file source preservation and workbook-save saturation coverage. Reservation estimates are not total-memory or latency qualification; disk quotas, early preview, fairness/publication profiling and the other finish criteria remain open.
+
+### Detached reload and recovery admission
+
+Every detached figure family now admits serialized cache reopening through shared scan/payload limits. Verified parser profiles are serialized with windows; legacy windows reserve conservative supported bounds. Refused opens create no task, and window close transfers active ownership to terminal cleanup. Capacity waiting is shown separately from source verification.
+
+Recovery metadata reads, replacement-source verification/index rebuilding and recovered-copy saves use the same admission. Refusal leaves the current recovery candidate/input intact and creates no output. Closed recovery windows ignore late update callbacks. The standard suite passes 148/148, including all five native serialized figure reloads under scan pressure and recovery read/save pressure, retry, preserved original bytes and final resource cleanup. Auxiliary readers and other outstanding resource/performance gates remain separate work.
+
+### Import and workbook reopening admission
+
+Workbench CSV imports, serialized sheet reloads and registered-source reopening reserve shared background/payload capacity before dispatch. Deferred imports create no cache. Pending operations remain cancellable, and closing/removing/replacing their owner transfers active reservation cleanup to terminal task completion. Verified import bounds are serialized with the window; older window metadata reserves the supported maximum parser until verification finishes. Linked-row navigation keeps its target while registered-source verification waits.
+
+Whole-workbook verification reserves a conservative 168 MiB for sequential maximum-bound source verification and bounded metadata/definitions. It can wait for existing views to release capacity; the current workbook remains intact during refusal, cancellation or failure. This is reservation accounting rather than a measured process-memory guarantee. Saving waits for pending as well as active sheet verification. The runtime import/document services remain independently usable and caller-owned.
+
+Clean compilation and 147/147 tests passed, covering no cache/worker on refused import, scan rollback, pending-close cancellation, successful retry/source preservation, workbook retention during pressure and saved-source verification cancellation/recovery. Detached source-opening/recovery/inspection paths and disk quota/LRU remain separate work.
+
+### Alignment and aligned-regeneration admission
+
+The Editor alignment window reserves shared background/payload capacity for source verification, mapping construction and matched-value materialization. Both source parser bounds are included, with 8 MiB verification or 32 MiB mapping/value allowances. Saved aligned-scatter regeneration uses validated saved import profiles to reserve before reopening/rebuilding original-source products. All underlying runtime APIs remain Editor-independent.
+
+Deferred operations retain frozen request inputs and start no task/product while refused. Source/mapping/value admission rolls back correctly on payload refusal, and close/cancellation retains active reservations until task termination. Native alignment tests exercise saturation, frozen mapping options, value pressure, absent regeneration output while refused, pending-close cleanup, recovery and serialized restoration. The standard suite passes 146/146. These estimates are not measured total process-memory guarantees; general import/open/recovery and auxiliary readers remain separate integration work.
+
+### Spatial and overlay construction admission
+
+Editor XY scatter, XYZ and same-source overlay construction share background-job/payload admission, including cache verification. Their 8 MiB base allowance adds declared record/parser scratch and column overhead. Waiting requests retain frozen inputs rather than queuing tasks; failed byte admission releases its scan ticket. Completion and terminal cancellation/close release reservations. 3D cancellation also removes a deferred construction without replacing its previous renderer. Overlay construction remains sequential across its series.
+
+The standard 146/146 tests pass with native exhausted-scan/exhausted-memory, rollback, recovery, replacement and close coverage. Source import, alignment and aligned-value regeneration remain outside this integration, and the account remains an estimate rather than measured total process RAM.
+
+### Scalar construction admission
+
+`FPWorkbenchFigureSession` accepts an optional `scanBudget` together with `memoryBudget`. One scan unit admits each series-cache construction/verification; payload accounting retains an 8 MiB allowance plus record/parser scratch and column overhead. The Editor figure registry supplies its shared accounts, so embedded and detached owners still share a single build. Direct runtime callers can supply their own accounts; existing calls remain compatible.
+
+Refused construction remains pending without a queued worker. Memory refusal rolls back the scan ticket. Scan jobs retain bytes without holding interactive worker slots; close/cancellation releases only after the worker terminates. Embedded/detached UI distinguishes waiting from active cache work, and closed detached windows cannot reacquire leases through late update callbacks. Clean compilation and 146/146 tests passed; source import, other cache families and alignment remain separate admission work.
+
+### Clipboard and CSV export accounting
+
+Editor range copies and materialized CSV exports share the memory/background-job admission used by histogram and image jobs. Copy reserves a 12 MiB payload allowance and export 32 MiB, each plus declared record/parser scratch and column overhead. Capacity refusal leaves the existing clipboard/output unchanged and reports a retry message. Both selection and configured export ranges use the same admission path. These estimates do not measure total process RAM or OS clipboard storage.
+
+Cancellation/window close retains ownership until the underlying task terminates; completed publication releases the account. Source bytes and frozen selection/correction semantics are unchanged. Connected compilation and 145/145 tests passed, including refusal/retry and deterministic held-worker close cleanup; shared bytes/workers/leases were zero afterward. Whole-source construction scans and disk quota/LRU remain outside this increment.
+
+### Image capture and encoding accounting
+
+Every Editor figure exporter now acquires shared memory/background-job admission before offscreen rendering, readback, GetPixels32 or worker snapshot cloning. The capture scope transfers its reservation to the runtime encoder/publication task; disposing the scope or closing/cancelling a window cannot release that account early. Pre-worker failures release immediately. Existing runtime single-image admission, no-overwrite publication and cooperative encoder cancellation remain in force.
+
+The account model uses a 64 MiB PNG/provenance/overhead allowance, 40 bytes per output pixel and 128 bytes per estimated new geometry vertex. 3D exports reuse the already-accounted point mesh. This is not a measured total of Unity driver, font, native encoder, GC or process RAM. Image bounds alone do not guarantee available shared capacity: an export may require smaller dimensions/point budgets or closing unused figures. Requests are refused explicitly; resolution is never silently reduced. Sidebar Background jobs now includes histogram scans and image encoding/publication.
+
+Clean connected compilation and 144/144 standard tests passed, including all five native export families. The focused image-job fixture passed 4/4; new checks cover capacity/oversize refusal, capture-scope disposal, worker ownership transfer, cooperative cancellation with work held, absent cancelled output and terminal cleanup. Post-suite shared/background counters were zero and ImageActive was false. Main-thread capture latency, representative RAM/GPU measurements, other source/export buffers and disk quota/LRU remain pending.

@@ -18,6 +18,45 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
             string path = Path.Combine(root, "input.csv"); File.WriteAllText(path, text, new UTF8Encoding(false));
             return FPWorkbenchCsvDataset.ImportAsync(path, Path.Combine(root, "cache"), new FPWorkbenchCsvProfile());
         }
+        [Test] public async Task TypedPhysicalSeriesUseDeclaredCultureAndSeparateCacheRevisions()
+        {
+            var data = await Import("x,y\n\"1,25\",\"2,5\"\n\"2,25\",---\n");
+            var schema = new FPWorkbenchTypedSchema { DatasetId = data.DatasetId, Columns = new[] {
+                new FPWorkbenchColumnDeclaration { Column = 0, ColumnId = data.Cell(0, 0).ColumnId, Type = FPWorkbenchColumnType.Real, Culture = "de-DE" },
+                new FPWorkbenchColumnDeclaration { Column = 1, ColumnId = data.Cell(0, 1).ColumnId, Type = FPWorkbenchColumnType.Real, Culture = "de-DE", MissingTokens = new[] { "---" } } } };
+            var program = FPWorkbenchFormulaProgram.Compile(data, new FPWorkbenchFormulaSet { DatasetId = data.DatasetId }, schema.Compile(data));
+            var binding = new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, XColumn = 0, YColumn = 1 };
+            var series = await FPWorkbenchSeriesCache.BuildAsync(data, binding, calculations: program);
+            Assert.That(series.FirstX, Is.EqualTo(1.25)); Assert.That(series.LastX, Is.EqualTo(2.25));
+            var view = await series.QueryAsync(1, 3);
+            Assert.That(view.Maximum, Is.EqualTo(2.5)); Assert.That(view.Bins.Sum(b => b.InvalidCount), Is.EqualTo(1));
+            Assert.That(series.FormulaFingerprint, Is.EqualTo(program.Fingerprint));
+            var edits = new FPWorkbenchChangeSet { DatasetId = data.DatasetId };
+            edits.Set(data.Cell(0, 1), "2,5", "7,5", FPWorkbenchEditKind.Text, "fixture");
+            var corrected = await FPWorkbenchSeriesCache.BuildAsync(data, binding, changes: edits.Snapshot(), calculations: program);
+            Assert.That((await corrected.QueryAsync(1, 3)).Maximum, Is.EqualTo(7.5));
+            Assert.That((await series.QueryAsync(1, 3)).Maximum, Is.EqualTo(2.5));
+            schema.Columns[1].Type = FPWorkbenchColumnType.Text;
+            var other = FPWorkbenchFormulaProgram.Compile(data, new FPWorkbenchFormulaSet { DatasetId = data.DatasetId }, schema.Compile(data));
+            var text = await FPWorkbenchSeriesCache.BuildAsync(data, binding, calculations: other);
+            Assert.That(text.DirectoryPath, Is.Not.EqualTo(series.DirectoryPath));
+            Assert.That((await text.QueryAsync(1, 3)).Bins.Sum(b => b.InvalidCount), Is.EqualTo(2));
+            var session = new FPWorkbenchFigureSession(data, binding, new FPWorkbenchPlotSettings(), calculations: program);
+            using (var lease = session.Retain()) {
+                long revision = session.Revision;
+                session.ApplyCalculations(other);
+                Assert.That(session.Revision, Is.GreaterThan(revision), "Physical plots must invalidate when typed interpretation changes.");
+                revision = session.Revision; session.ApplyCalculations(other);
+                Assert.That(session.Revision, Is.EqualTo(revision));
+                session.ApplyCalculations(null);
+                Assert.That(session.Revision, Is.GreaterThan(revision), "Removing a declaration restores the legacy interpretation.");
+            }
+            schema.Columns[0].Type = FPWorkbenchColumnType.Text;
+            var invalidX = FPWorkbenchFormulaProgram.Compile(data, new FPWorkbenchFormulaSet { DatasetId = data.DatasetId }, schema.Compile(data));
+            try { await FPWorkbenchSeriesCache.BuildAsync(data, binding, calculations: invalidX); Assert.Fail("Expected invalid typed X rejection."); }
+            catch (InvalidDataException) { }
+            Assert.That(Directory.GetDirectories(data.CacheDirectory, ".series-*"), Is.Empty);
+        }
         [Test] public async Task PyramidRangeQueryPreservesExtremaAndUsesBoundedRecords()
         {
             var text = new StringBuilder("x,y\n");

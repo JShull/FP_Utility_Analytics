@@ -10,6 +10,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     {
         [SerializeField] private bool clipboardHeaders = true;
         private Task<string> clipboardWork;
+        private FPWorkbenchEditorResources.ScanReservation clipboardMemory;
         private CancellationTokenSource clipboardCancellation;
         private void SelectTableRange(Sheet sheet, long row, int column, bool extend)
         {
@@ -20,11 +21,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     sheet.RangeAnchorRow = row; sheet.RangeAnchorColumn = id; columns = new[] { id };
                 } else {
                     int anchorSchema = Array.IndexOf(sheet.SchemaIds, sheet.RangeAnchorColumn);
-                    int anchor = Array.IndexOf(sheet.ColumnOrder, anchorSchema), current = Array.IndexOf(sheet.ColumnOrder, column);
+                    int[] rangeOrder = FrozenCount(sheet) > 0 ? WindowOrder(sheet) : sheet.ColumnOrder;
+                    int anchor = Array.IndexOf(rangeOrder, anchorSchema), current = Array.IndexOf(rangeOrder, column);
                     if (anchor < 0 || current < 0) throw new InvalidOperationException("The range anchor is hidden or removed. Click a visible cell to start a new selection.");
                     int left = Math.Min(anchor, current), count = Math.Abs(anchor - current) + 1;
                     if (count > 32) throw new InvalidOperationException("Select at most 32 columns for a table range.");
-                    columns = new string[count]; for (int c = 0; c < count; c++) columns[c] = sheet.SchemaIds[sheet.ColumnOrder[left + c]];
+                    columns = new string[count]; for (int c = 0; c < count; c++) columns[c] = sheet.SchemaIds[rangeOrder[left + c]];
                     first = Math.Min(row, sheet.RangeAnchorRow); end = Math.Max(row, sheet.RangeAnchorRow) + 1;
                 }
                 var next = new FPWorkbenchTableSelection { DatasetId = sheet.Dataset.DatasetId, FirstRow = first, EndRow = end, ColumnIds = columns };
@@ -41,6 +43,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             if (clipboardWork != null || sheet?.Selection == null) return;
             try {
+                EnsureTableSchema(sheet);
+                if (!FPWorkbenchEditorResources.TryAcquireScan(FPWorkbenchEditorResources.SourceBytes(sheet.Dataset, 12L * 1024 * 1024), out clipboardMemory))
+                    throw new InvalidOperationException("Shared copy memory/background capacity is busy; retry when current work finishes.");
                 clipboardCancellation = new CancellationTokenSource();
                 clipboardWork = FPWorkbenchTableClipboard.BuildAsync(sheet.PageTable, sheet.Selection, clipboardHeaders,
                     sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), clipboardCancellation.Token);
@@ -49,7 +54,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void CancelClipboard()
         {
-            Cancel(clipboardCancellation); clipboardCancellation = null; Observe(clipboardWork); clipboardWork = null;
+            Cancel(clipboardCancellation); clipboardCancellation = null;
+            if (clipboardMemory != null) clipboardMemory.ReleaseAfter(clipboardWork); else Observe(clipboardWork);
+            clipboardMemory = null; clipboardWork = null;
         }
         private bool TickClipboard()
         {
@@ -58,6 +65,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             try { EditorGUIUtility.systemCopyBuffer = task.GetAwaiter().GetResult(); status = "Selected range copied as quoted TSV; values/formulas were frozen at the copy request."; }
             catch (OperationCanceledException) { status = "Range copy cancelled; clipboard retained."; }
             catch (Exception ex) { error = "Range copy failed; clipboard retained. " + ex.Message; }
+            clipboardMemory?.Dispose(); clipboardMemory = null;
             clipboardCancellation?.Dispose(); clipboardCancellation = null; return true;
         }
         private void DrawRangeToolbar(Sheet sheet)

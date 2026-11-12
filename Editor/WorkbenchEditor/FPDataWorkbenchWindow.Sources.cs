@@ -15,6 +15,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private bool showRegisteredSources;
         private readonly Dictionary<string, FPWorkbenchCsvDataset> admittedSources = new Dictionary<string, FPWorkbenchCsvDataset>();
         private Task<FPWorkbenchCsvDataset> sourceOpening;
+        private Func<Task<FPWorkbenchCsvDataset>> pendingSourceOpening;
+        private FPWorkbenchEditorResources.ScanReservation sourceOpeningMemory;
+        private long sourceOpeningBytes;
         private CancellationTokenSource sourceCancellation;
         private FPWorkbenchFigureDocument sourceFigure;
         private FPWorkbenchSourceDocument openingSource;
@@ -26,7 +29,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (index < 0 && registeredSources.Count >= 64) throw new InvalidOperationException("A workbook supports up to 64 registered sources.");
             var source = new FPWorkbenchSourceDocument { DatasetId = data.DatasetId, SourcePath = data.SourcePath, CacheDirectory = data.CacheDirectory, Name = name, Import = data.ImportProfile };
             if (index >= 0)
-            { source.HasCalculations = registeredSources[index].HasCalculations; source.Calculations = registeredSources[index].Calculations; }
+            { source.HasCalculations = registeredSources[index].HasCalculations; source.Calculations = registeredSources[index].Calculations;
+                source.HasTypedSchema = registeredSources[index].HasTypedSchema; source.TypedSchema = registeredSources[index].TypedSchema; }
             if (index < 0) registeredSources.Add(source); else registeredSources[index] = source;
             admittedSources[data.DatasetId] = data;
         }
@@ -41,22 +45,25 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var source = registeredSources.Find(s => s.DatasetId == (datasetId ?? figure.DatasetId));
             if (source == null) { error = "The figure's source is not registered in this workbook."; return; }
             CancelSourceOpening(); sourceCancellation = new CancellationTokenSource(); sourceFigure = figure; openingSource = source;
-            sourceOpening = FPWorkbenchCsvDataset.OpenAsync(source.CacheDirectory, sourceCancellation.Token);
+            QueueSourceOpening(source);
             status = "Verifying registered figure source in background…";
         }
         private bool TickSourceOpening()
         {
-            if (sourceOpening == null || !sourceOpening.IsCompleted) return false;
+            bool changed = false;
+            if (pendingSourceOpening != null) { TryStartSourceOpening(); changed = true; }
+            if (sourceOpening == null || !sourceOpening.IsCompleted) return changed;
             var task = sourceOpening; var figure = sourceFigure; var source = openingSource;
             sourceOpening = null; sourceFigure = null; openingSource = null;
+            sourceOpeningMemory?.Dispose(); sourceOpeningMemory = null;
             try
             {
                 var data = task.GetAwaiter().GetResult();
                 if (data.DatasetId != source.DatasetId || !string.Equals(Path.GetFullPath(data.SourcePath), Path.GetFullPath(source.SourcePath), StringComparison.OrdinalIgnoreCase) ||
                     data.ImportProfile.Delimiter != source.Import.Delimiter || data.ImportProfile.EncodingCodePage != source.Import.EncodingCodePage)
                     throw new InvalidDataException("Registered source identity/profile differs; current workbook retained.");
+                source.CompileProgram(data);
                 RememberSource(data, source.Name);
-                if (source.HasCalculations) FPWorkbenchFormulaProgram.Compile(data, source.Calculations);
                 if (figure == null) AddRegisteredSheet(data, source.Name);
                 else if (savedFigures.Exists(f => f.Id == figure.Id)) OpenSavedFigure(figure);
                 status = "Registered figure source verified.";
@@ -67,7 +74,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void CancelSourceOpening()
         {
-            Cancel(sourceCancellation); sourceCancellation = null; Observe(sourceOpening); sourceOpening = null; sourceFigure = null; openingSource = null;
+            Cancel(sourceCancellation); sourceCancellation = null;
+            if (sourceOpeningMemory != null) sourceOpeningMemory.ReleaseAfter(sourceOpening); else Observe(sourceOpening);
+            sourceOpeningMemory = null; pendingSourceOpening = null; sourceOpening = null; sourceFigure = null; openingSource = null;
         }
         private void OpenRegisteredSheet(FPWorkbenchSourceDocument source)
         {
@@ -77,13 +86,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var data = FindSource(source.DatasetId);
             if (data != null) { AddRegisteredSheet(data, source.Name); return; }
             CancelSourceOpening(); sourceCancellation = new CancellationTokenSource(); openingSource = source;
-            sourceOpening = FPWorkbenchCsvDataset.OpenAsync(source.CacheDirectory, sourceCancellation.Token);
+            QueueSourceOpening(source);
             status = "Verifying registered table source in background…";
         }
         private void AddRegisteredSheet(FPWorkbenchCsvDataset data, string name)
         {
             if (sheets.Count >= 8) { error = "Eight open sheet tabs maximum; verified source retained."; return; }
-            var sheet = new Sheet { Dataset = data, Name = name, Source = data.SourcePath, Cache = data.CacheDirectory,
+            var sheet = new Sheet { Dataset = data, Name = name, Source = data.SourcePath, Cache = data.CacheDirectory, Import = data.ImportProfile,
                 Lifetime = new CancellationTokenSource(), ColumnNames = new string[data.ColumnCount] };
             RestoreColumns(sheet);
             for (int c = 0; c < data.ColumnCount; c++) sheet.ColumnNames[c] = (c + 1) + ": " + data.GetColumnName(c);

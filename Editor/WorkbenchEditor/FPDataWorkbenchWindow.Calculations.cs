@@ -8,7 +8,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
 
     public sealed partial class FPDataWorkbenchWindow
     {
-        [Serializable] private sealed class CalculationPayload { public List<FPWorkbenchFormulaSet> Sets = new List<FPWorkbenchFormulaSet>(); }
+        [Serializable] private sealed class CalculationPayload {
+            public List<FPWorkbenchFormulaSet> Sets = new List<FPWorkbenchFormulaSet>();
+            public List<FPWorkbenchTypedSchema> Schemas = new List<FPWorkbenchTypedSchema>();
+        }
         [SerializeField] private FPWorkbenchEditUndoState calculationUndo;
         [SerializeField] private bool showCalculations;
         [SerializeField] private string calculationSource, calculationName = "Calculated", calculationExpression = "C1", calculationUnits = "";
@@ -19,6 +22,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var payload = new CalculationPayload();
             registeredSources ??= new List<FPWorkbenchSourceDocument>();
             foreach (var source in registeredSources) if (source.HasCalculations) payload.Sets.Add(source.Calculations);
+            foreach (var source in registeredSources) if (source.HasTypedSchema) payload.Schemas.Add(source.TypedSchema);
             return payload;
         }
         private void InitializeCalculationUndo()
@@ -38,7 +42,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             try
             {
-                var program = FPWorkbenchFormulaProgram.Compile(sheet.Dataset, definitions); var normalized = program.Definition;
+                var metadata = registeredSources.Find(s => s.DatasetId == sheet.Dataset.DatasetId);
+                var program = metadata != null && metadata.HasTypedSchema
+                    ? FPWorkbenchFormulaProgram.Compile(sheet.Dataset, definitions, metadata.TypedSchema.Compile(sheet.Dataset))
+                    : FPWorkbenchFormulaProgram.Compile(sheet.Dataset, definitions);
+                var normalized = program.Definition;
                 foreach (var other in sheets)
                     if (other.Dataset?.DatasetId == sheet.Dataset.DatasetId && other.ShowPlot)
                     {
@@ -46,20 +54,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                         active.ResolveDerivedY(program); active.ResolveDerivedX(program);
                     }
                 RememberSource(sheet.Dataset, sheet.Name); var source = registeredSources.Find(s => s.DatasetId == sheet.Dataset.DatasetId);
-                string before = JsonUtility.ToJson(CaptureCalculations()); var after = CaptureCalculations();
+                var after = CaptureCalculations();
                 int existing = after.Sets.FindIndex(s => s.DatasetId == source.DatasetId);
                 bool present = normalized.Columns.Count > 0 || normalized.SourceUnits.Count > 0;
                 if (present) { if (existing < 0) after.Sets.Add(normalized); else after.Sets[existing] = normalized; }
                 else if (existing >= 0) after.Sets.RemoveAt(existing);
-                string next = JsonUtility.ToJson(after);
-                if (next.Length > 1024 * 1024) throw new InvalidOperationException("Calculation Undo metadata exceeds 2 MiB; use fewer/shorter definitions.");
-                if (before == next) return false;
-                calculationUndo.Json = before; calculationUndoObserved = before;
-                Undo.IncrementCurrentGroup(); int group = Undo.GetCurrentGroup(); Undo.SetCurrentGroupName("Change Workbench calculations");
-                Undo.RegisterCompleteObjectUndo(calculationUndo, "Change Workbench calculations");
-                source.HasCalculations = present; source.Calculations = present ? normalized : null;
-                calculationUndo.Json = next; calculationUndoObserved = next; EditorUtility.SetDirty(calculationUndo); Undo.CollapseUndoOperations(group);
-                error = null; status = "Calculation definitions applied; original source unchanged."; Repaint(); return true;
+                return CommitDefinitions(after, "Change Workbench calculations");
             }
             catch (Exception ex) { error = ex.Message; return false; }
         }
@@ -68,21 +68,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (calculationUndo == null || calculationUndo.Json == calculationUndoObserved) return;
             try
             {
-                var payload = JsonUtility.FromJson<CalculationPayload>(calculationUndo.Json);
-                var normalized = new Dictionary<string, FPWorkbenchFormulaSet>();
-                foreach (var set in payload.Sets)
-                {
-                    var source = registeredSources.Find(s => s.DatasetId == set.DatasetId);
-                    if (source == null || normalized.ContainsKey(set.DatasetId)) throw new InvalidOperationException("Calculation Undo source is no longer registered.");
-                    var data = sheets.Find(s => s.Dataset?.DatasetId == set.DatasetId)?.Dataset;
-                    if (data == null) admittedSources.TryGetValue(set.DatasetId, out data);
-                    normalized[set.DatasetId] = (data == null ? FPWorkbenchFormulaProgram.CompileSchema(set.DatasetId, source.Import.MaximumColumns, set) : FPWorkbenchFormulaProgram.Compile(data, set)).Definition;
-                }
-                foreach (var source in registeredSources)
-                { source.HasCalculations = normalized.TryGetValue(source.DatasetId, out var definitions); source.Calculations = definitions; }
+                var payload = NormalizeDefinitions(JsonUtility.FromJson<CalculationPayload>(calculationUndo.Json));
+                InstallDefinitions(payload);
                 calculationUndoObserved = calculationUndo.Json; calculationSource = null; Repaint();
             }
-            catch (Exception ex) { error = ex.Message; }
+            catch (Exception ex) { error = "Definition Undo/Redo refused: " + ex.Message; calculationUndo.Json = calculationUndoObserved; EditorUtility.SetDirty(calculationUndo); }
         }
         private void LoadCalculationDraft(Sheet sheet, FPWorkbenchFormulaSet definitions)
         {

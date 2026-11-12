@@ -16,16 +16,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private string exportSheetId;
         [SerializeField] private FPWorkbenchExportInvalidPolicy exportInvalidPolicy;
         private Task<FPWorkbenchCsvExportResult> exportWork;
+        private FPWorkbenchEditorResources.ScanReservation exportMemory;
         private CancellationTokenSource exportCancellation;
         private string exportStatus;
         private void CancelExport()
-        { Cancel(exportCancellation); exportCancellation = null; Observe(exportWork); exportWork = null; }
+        {
+            Cancel(exportCancellation); exportCancellation = null;
+            if (exportMemory != null) exportMemory.ReleaseAfter(exportWork); else Observe(exportWork);
+            exportMemory = null; exportWork = null;
+        }
         private bool TickExport()
         {
             if (exportWork == null || !exportWork.IsCompleted) return false;
             try { var result = exportWork.GetAwaiter().GetResult(); exportStatus = "Exported " + (result.EndRow - result.FirstRow) + " rows; " + result.InvalidCells + " invalid calculated cells, " + result.MaskedCells + " masked cells."; }
             catch (OperationCanceledException) { exportStatus = "Export cancelled; no product published."; }
             catch (Exception ex) { exportStatus = "Export failed: " + ex.Message; }
+            exportMemory?.Dispose(); exportMemory = null;
             exportWork = null; exportCancellation?.Dispose(); exportCancellation = null; return true;
         }
         private void BeginTableSelectionExport(Sheet sheet, string path)
@@ -35,11 +41,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 EnsureTableSchema(sheet);
                 var selection = sheet.Selection ?? throw new InvalidOperationException("Select a table range first (click, then Shift-click).");
                 int[] selected = selection.Resolve(sheet.PageTable);
+                BeginCsvExport(sheet, path, selected, selection.FirstRow, selection.EndRow);
+            } catch (Exception ex) { exportStatus = "Export failed: " + ex.Message; }
+        }
+        private void BeginCsvExport(Sheet sheet, string path, int[] columns, long first, long end)
+        {
+            if (exportWork != null) { exportStatus = "An export is already running."; return; }
+            try {
+                EnsureTableSchema(sheet);
+                if (!FPWorkbenchEditorResources.TryAcquireScan(FPWorkbenchEditorResources.SourceBytes(sheet.Dataset, 32L * 1024 * 1024), out exportMemory))
+                    throw new InvalidOperationException("Shared export memory/background capacity is busy; retry when current work finishes.");
                 exportCancellation?.Dispose(); exportCancellation = new CancellationTokenSource();
-                exportWork = FPWorkbenchCsvExport.WriteAsync(sheet.Dataset, path, selected, selection.FirstRow, selection.EndRow,
-                    sheet.TableProgram, sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), exportInvalidPolicy, cancellation: exportCancellation.Token);
-                exportStatus = "Writing selected source rows/column identities in background; later selection changes do not retarget this export.";
-            } catch (Exception ex) { exportStatus = "Export failed: " + ex.Message; exportCancellation?.Dispose(); exportCancellation = null; }
+                exportWork = FPWorkbenchCsvExport.WriteAsync(sheet.Dataset, path, columns, first, end, sheet.TableProgram,
+                    sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), exportInvalidPolicy, cancellation: exportCancellation.Token);
+                exportStatus = "Writing source rows/column identities in background; later selection changes do not retarget this export.";
+            }
+            catch (Exception ex) { exportStatus = "Export failed: " + ex.Message; CancelExport(); }
         }
         private void DrawExportControls(Sheet sheet)
         {
@@ -80,13 +97,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                             if (!string.IsNullOrEmpty(path))
                             {
                                 var selected = new int[exportColumnCount]; for (int c = 0; c < selected.Length; c++) selected[c] = exportFirstColumn + c;
-                                exportCancellation = new CancellationTokenSource();
-                                exportWork = FPWorkbenchCsvExport.WriteAsync(sheet.Dataset, path, selected, exportFirstRow, exportEndRow,
-                                    sheet.TableProgram, sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), exportInvalidPolicy, cancellation: exportCancellation.Token);
-                                exportStatus = "Writing " + Path.GetFileName(path) + " in background…";
+                                BeginCsvExport(sheet, path, selected, exportFirstRow, exportEndRow);
                             }
                         }
-                        catch (Exception ex) { exportStatus = "Export failed: " + ex.Message; exportCancellation?.Dispose(); exportCancellation = null; }
+                        catch (Exception ex) { exportStatus = "Export failed: " + ex.Message; }
                     }
                 }
             }

@@ -9,6 +9,25 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchPresentationUndoTests
     {
+        [Test] public void RightAxisPresetUndoRetainsDestinationLimitsAndSharedX()
+        {
+            Type type = typeof(FPDataWorkbenchWindow).Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchPresentationUndo", true);
+            var helper = (IDisposable)Activator.CreateInstance(type, new object[] { (Action)(() => { }) });
+            var settings = new FPWorkbenchPlotSettings { HasRange = true, StartX = -5, EndX = 5, LockY = true, MinimumY = 1, MaximumY = 100 };
+            try
+            {
+                Undo.IncrementCurrentGroup(); type.GetMethod("Begin").Invoke(helper, new object[] { settings });
+                FPWorkbenchPlotPreset.Capture(new FPWorkbenchPlotSettings { YScale = FPWorkbenchAxisScale.Log10, YLabel = "Right", InvertY = true }).ApplyY(settings);
+                type.GetMethod("End").Invoke(helper, null); Undo.FlushUndoRecordObjects();
+                settings.StartX = -10; settings.EndX = 10;
+                Undo.PerformUndo(); Assert.That(settings.YScale, Is.EqualTo(FPWorkbenchAxisScale.Linear)); Assert.That(settings.YLabel, Is.Empty);
+                Undo.PerformRedo(); Assert.That(settings.YScale, Is.EqualTo(FPWorkbenchAxisScale.Log10)); Assert.That(settings.YLabel, Is.EqualTo("Right"));
+                Assert.That(settings.StartX, Is.EqualTo(-10)); Assert.That(settings.EndX, Is.EqualTo(10));
+                Assert.That(settings.XScale, Is.EqualTo(FPWorkbenchAxisScale.Linear)); Assert.That(settings.LockY, Is.True);
+                Assert.That(settings.MinimumY, Is.EqualTo(1)); Assert.That(settings.MaximumY, Is.EqualTo(100));
+            }
+            finally { helper.Dispose(); }
+        }
         [Test] public void AuthoringUndoPreservesNavigationAndAutomaticLimits()
         {
             Type type = typeof(FPDataWorkbenchWindow).Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchPresentationUndo", true);

@@ -28,6 +28,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             [NonSerialized] public FPWorkbenchPresentationUndo PresentationUndo;
             [NonSerialized] public FPWorkbenchColumnProjectionUndo ProjectionUndo;
             [NonSerialized] public int[] ColumnOrder;
+            [NonSerialized] public int[] FrozenViewport, FrozenViewportOrder;
+            [NonSerialized] public string[] FrozenViewportIds;
+            [NonSerialized] public int FrozenViewportFirst;
             [NonSerialized] public string[] SchemaIds;
             [NonSerialized] public FPWorkbenchTableView PageTable;
             [NonSerialized] public FPWorkbenchSeriesCache Series;
@@ -35,12 +38,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             [NonSerialized] public long FigureRevision = -1;
             [NonSerialized] public string[] ColumnNames;
             public FPWorkbenchColumnLayout Columns;
+            public FPWorkbenchCsvProfile Import;
             [NonSerialized] public FPWorkbenchCsvDataset Dataset;
             [NonSerialized] public FPWorkbenchTableView Table;
             [NonSerialized] public FPWorkbenchFormulaSet TableDefinitions;
+            [NonSerialized] public FPWorkbenchTypedSchema TableTypedDefinitions;
+            [NonSerialized] public FPWorkbenchCompiledSchema TableTypedSchema;
             [NonSerialized] public FPWorkbenchFormulaProgram TableProgram;
             [NonSerialized] public string[] TableNames;
             [NonSerialized] public Task<FPWorkbenchCsvDataset> Loading;
+            [NonSerialized] public Func<Task<FPWorkbenchCsvDataset>> PendingLoading;
+            [NonSerialized] public FPWorkbenchEditorResources.ScanReservation LoadMemory;
+            [NonSerialized] public long LoadBytes;
+            [NonSerialized] public bool WaitingForLoad;
+            [NonSerialized] public ImportPreviewReports PreviewReports;
+            [NonSerialized] public FPWorkbenchCsvPreview Preview;
             [NonSerialized] public CancellationTokenSource Lifetime;
         }
         [SerializeField] private List<Sheet> sheets = new List<Sheet>();
@@ -49,6 +61,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private int encoding;
         [SerializeField] private float sidebar = 260, plotHeight = 220;
         private Task<FPWorkbenchPage> pageWork;
+        private bool windowActive;
         private CancellationTokenSource pageCancel;
         private FPWorkbenchPage page;
         private FPWorkbenchSeriesView summary;
@@ -77,6 +90,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         public static void Open() => GetWindow<FPDataWorkbenchWindow>("Data Workbench");
         private void OnEnable()
         {
+            windowActive = true;
             minSize = new Vector2(720, 480);
             InitializeCorrectionUndo();
             InitializePlotUndo();
@@ -85,28 +99,35 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             foreach (var sheet in sheets)
             {
                 sheet.Lifetime = new CancellationTokenSource();
-                if (!string.IsNullOrEmpty(sheet.Cache)) sheet.Loading = FPWorkbenchCsvDataset.OpenAsync(sheet.Cache, sheet.Lifetime.Token);
+                if (!string.IsNullOrEmpty(sheet.Cache)) {
+                    string cache = sheet.Cache; var token = sheet.Lifetime.Token;
+                    // Older serialized windows have no saved bound: admit the largest supported parser before opening.
+                    QueueSheetLoad(sheet, () => FPWorkbenchCsvDataset.OpenAsync(cache, token), sheet.Import ?? new FPWorkbenchCsvProfile { MaximumRecordBytes = 16 * 1024 * 1024, MaximumColumns = 4096 });
+                }
             }
             EditorApplication.update += Tick;
         }
         private void OnDisable()
         {
+            windowActive = false;
             pendingLinkedDataset = null; pendingLinkedColumns = null;
             CancelSelectionFrame();
             CancelClipboard();
             CancelExport();
             CancelSourceOpening();
-            Cancel(changeCancel); Observe(changeLoad); Observe(changeSave);
+            CancelChangeFiles();
             Undo.undoRedoPerformed -= RestoreCorrectionUndo;
             Undo.undoRedoPerformed -= RestorePlotUndo;
             Undo.undoRedoPerformed -= RestoreCalculationUndo;
             AssemblyReloadEvents.beforeAssemblyReload -= PreserveWorkingMetadata;
-            Cancel(workbookCancel); Observe(workbookLoad); Observe(workbookSave);
+            Cancel(workbookCancel); AbandonWorkbookLoad();
+            if (workbookSaveMemory != null) workbookSaveMemory.ReleaseAfter(workbookSave); else Observe(workbookSave);
+            workbookSaveMemory = null; workbookSave = null;
             if (sizingSheet != null) { SaveColumns(sizingSheet); sizingSheet = null; sizingColumn = -1; if (GUIUtility.hotControl == columnControl) GUIUtility.hotControl = 0; }
-            EditorApplication.update -= Tick; Cancel(pageCancel);
-            Observe(pageWork);
+            EditorApplication.update -= Tick;
+            AbandonRawPage();
             CancelVirtualPage();
-            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; Cancel(sheet.Lifetime); Observe(sheet.Loading); }
+            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); }
         }
         private static void Observe(Task task)
         {
@@ -115,13 +136,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private static void Cancel(CancellationTokenSource source) { if (source != null) { source.Cancel(); source.Dispose(); } }
         private void Tick()
         {
+            // Editor update may already have captured its invocation list when this window closes.
+            if (!windowActive) return;
             bool changed = TickClipboard() | TickWorkbook() | TickChanges() | TickSourceOpening() | TickExport() | TickLinkedSelection();
             double now = EditorApplication.timeSinceStartup;
             Vector2 pixels = position.size;
             if (pixels != lastWindowPixels || sidebar != lastSidebarWidth)
             {
-                if (Current?.Dataset != null && tableRect.width > 1)
-                    visibleColumns = Current.Columns.Fit(Math.Max(1, tableRect.width + pixels.x - lastWindowPixels.x - sidebar + lastSidebarWidth - IndexWidth(Current) - RowScrollWidth), Current.FirstColumn, order: Current.ColumnOrder).Length;
+                if (Current?.Dataset != null && Current.ColumnOrder != null && tableRect.width > 1)
+                    visibleColumns = FitTableColumns(Current, Math.Max(1, tableRect.width + pixels.x - lastWindowPixels.x - sidebar + lastSidebarWidth - IndexWidth(Current) - RowScrollWidth)).Length;
                 repaintUntil = now + .25;
                 lastWindowPixels = pixels; lastSidebarWidth = sidebar;
                 Repaint();
@@ -130,20 +153,30 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             { lastResizeRepaint = now; Repaint(); }
             foreach (var sheet in sheets)
             {
+                var preview = sheet.PreviewReports?.Take();
+                if (preview != null) { sheet.Preview = preview; changed = true; }
+                if (sheet.PendingLoading != null) { TryStartSheetLoad(sheet); changed = true; }
                 if (sheet.Loading == null || !sheet.Loading.IsCompleted) continue;
                 if (sheet.Loading.Status == TaskStatus.RanToCompletion)
                 { sheet.Dataset = sheet.Loading.Result; sheet.Cache = sheet.Dataset.CacheDirectory; if (sheet.Columns == null) RestoreColumns(sheet); else sheet.Columns.EnsureColumns(TableColumnCount(sheet.Dataset)); sheet.ColumnNames = new string[sheet.Dataset.ColumnCount]; for (int c = 0; c < sheet.ColumnNames.Length; c++) sheet.ColumnNames[c] = (c + 1) + ": " + sheet.Dataset.GetColumnName(c); status = "Indexed " + sheet.Dataset.RowCount.ToString("N0") + " logical data rows."; }
                 else if (sheet.Loading.IsFaulted) error = sheet.Loading.Exception.GetBaseException().Message;
-                sheet.Loading = null; changed = true;
+                ClearImportPreview(sheet); sheet.LoadMemory?.Dispose(); sheet.LoadMemory = null;
+                sheet.Loading = null; sheet.WaitingForLoad = false; changed = true;
+                if (sheet.Dataset != null) sheet.Import = sheet.Dataset.ImportProfile;
                 if (sheet.Dataset != null) { try { RememberSource(sheet.Dataset, sheet.Name); } catch (Exception ex) { error = ex.Message; } }
             }
             var current = Current;
             foreach (var sheet in sheets) if (sheet.Dataset != null) EnsureTableSchema(sheet);
             changed |= TickVirtualPage(current);
+            if (current?.Dataset == null) AbandonRawPage();
             if (pageWork != null && pageWork.IsCompleted)
             {
-                if (pageWork.Status == TaskStatus.RanToCompletion && current != null && current.Id == pageSheet && current.FirstRow == requestedRow && current.FirstColumn == requestedColumn && visibleColumns == requestedColumnCount) page = pageWork.Result;
+                if (pageWork.Status == TaskStatus.RanToCompletion && current != null && current.Id == pageSheet && current.FirstRow == requestedRow && current.FirstColumn == requestedColumn && visibleColumns == requestedColumnCount) {
+                    rawMemory?.Dispose(); rawMemory = pendingRawMemory; pendingRawMemory = null; page = pageWork.Result;
+                    rawMemory.Complete(RetainedPageBytes(page.CharacterCount, page.RowCount, requestedColumnCount, false));
+                }
                 else if (pageWork.IsFaulted) { error = pageWork.Exception.GetBaseException().Message; failedPage = pageSheet + ":" + requestedRow + ":" + requestedColumn + ":" + requestedColumnCount; }
+                pendingRawMemory?.Dispose(); pendingRawMemory = null;
                 pageWork = null; changed = true;
             }
             changed |= TickPlot(current);
@@ -155,7 +188,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     Cancel(pageCancel); pageCancel = new CancellationTokenSource();
                     pageSheet = current.Id; requestedRow = current.FirstRow; requestedColumn = current.FirstColumn;
                     requestedColumnCount = Math.Min(visibleColumns, current.Dataset.ColumnCount - current.FirstColumn);
-                    pageWork = current.Dataset.ReadPageAsync(current.FirstRow, RowsPerPage, current.FirstColumn, requestedColumnCount, pageCancel.Token);
+                    rawMemory?.Dispose(); rawMemory = null; page = null;
+                    if (AdmitPage(current.Dataset, out pendingRawMemory)) {
+                        try { pageWork = current.Dataset.ReadPageAsync(current.FirstRow, RowsPerPage, current.FirstColumn, requestedColumnCount, pageCancel.Token); }
+                        catch { pendingRawMemory.Dispose(); pendingRawMemory = null; throw; }
+                    }
                 }
                 else if (pageWork != null && (pageSheet != current.Id || requestedRow != current.FirstRow || requestedColumn != current.FirstColumn || requestedColumnCount != visibleColumns)) pageCancel?.Cancel();
             }
@@ -165,14 +202,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             if (registeredSources != null && registeredSources.Count >= 64) { error = "This workbook has 64 registered sources; reopen an existing source from the source list or use another workbook."; return; }
             if (sheets.Count >= 8) { error = "This first slice supports eight open sheets."; return; }
-            foreach (var existing in sheets) if (existing.Loading != null) { error = "Wait for or cancel the active import before adding another sheet."; return; }
+            foreach (var existing in sheets) if (IsLoading(existing)) { error = "Wait for or cancel the active import before adding another sheet."; return; }
             try
             {
                 string full = Path.GetFullPath(path);
                 string cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FuzzPhyte", "Analytics", "Workbench", Guid.NewGuid().ToString("N"));
                 var sheet = new Sheet { Name = Path.GetFileNameWithoutExtension(full), Source = full, Cache = cache, Lifetime = new CancellationTokenSource() };
                 var profile = new FPWorkbenchCsvProfile { EncodingCodePage = encoding == 0 ? 65001 : 1252 };
-                sheet.Loading = FPWorkbenchCsvDataset.ImportAsync(full, cache, profile, sheet.Lifetime.Token, new ImportProgress(this));
+                var token = sheet.Lifetime.Token; var reporter = new ImportProgress(this);
+                var previews = new ImportPreviewReports(); sheet.PreviewReports = previews;
+                QueueSheetLoad(sheet, () => FPWorkbenchCsvDataset.ImportAsync(full, cache, profile, token, reporter, previews), profile);
                 sheets.Add(sheet); active = sheets.Count - 1; error = null; progress = 0; status = "Hashing/indexing in background; source remains unchanged.";
             }
             catch (Exception ex) { error = ex.Message; }
@@ -211,7 +250,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                         if (matches && (summary.StartX != sheet.Plot.StartX || summary.EndX != sheet.Plot.EndX))
                             GUI.Label(new Rect(plot.x + 80, plot.y + 23, plot.width - 90, 20), "Updating view… (previous range shown)", EditorStyles.miniLabel);
                     }
-                    else EditorGUILayout.HelpBox(sheet?.Loading != null ? "Indexing/verifying source in the background…" : "Import a CSV from the source panel.", MessageType.Info);
+                    else if (sheet?.Preview != null) DrawImportPreview(sheet);
+                    else EditorGUILayout.HelpBox(sheet?.WaitingForLoad == true ? "Waiting for shared memory/background capacity…" : IsLoading(sheet) ? "Indexing/verifying source in the background…" : "Import a CSV from the source panel.", MessageType.Info);
                 }
             }
             Resize(new Rect(sidebar + 2, 0, 6, position.height), true);
@@ -233,14 +273,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var sheet = Current;
             if (sheet == null) return;
             sheet.Name = EditorGUILayout.TextField("Sheet name", sheet.Name);
-            if (sheet.Loading != null)
+            if (IsLoading(sheet))
             {
                 EditorGUILayout.LabelField("Index progress", progress.ToString("P0"));
-                if (GUILayout.Button("Cancel import")) sheet.Lifetime.Cancel();
+                if (GUILayout.Button("Cancel import")) { CancelSheetLoad(sheet); status = "Import cancelled; original source retained."; }
             }
             if (sheet.Dataset != null)
             {
                 DrawCorrectionControls(sheet);
+                DrawPageBudget();
+                DrawTypedSchemaControls(sheet);
                 DrawSourceUnitControls(sheet);
                 DrawCalculationControls(sheet);
                 DrawExportControls(sheet);
@@ -255,7 +297,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             CancelClipboard();
             var sheet = Current; if (sheet == null) return;
             try { RememberSource(sheet.Dataset, sheet.Name); } catch (Exception ex) { error = ex.Message; return; }
-            sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; Cancel(sheet.Lifetime); Observe(sheet.Loading); ClearPlotUndo(sheet.Id);
+            sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); ClearPlotUndo(sheet.Id);
             sheets.RemoveAt(active); active = Math.Max(0, active - 1); page = null; summary = null;
         }
         private void DrawTabs()
@@ -279,23 +321,24 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 GUILayout.Label("/ " + sheet.Dataset.RowCount.ToString("N0") + " rows");
                 GUILayout.FlexibleSpace();
             }
-            int shown = sheet.Columns.Fit(Math.Max(1, tableRect.width - IndexWidth(sheet) - RowScrollWidth), sheet.FirstColumn, order: sheet.ColumnOrder).Length;
-            int left = sheet.FirstColumn, right = Math.Max(0, VisibleColumnCount(sheet) - sheet.FirstColumn - shown);
+            int shown = FitTableColumns(sheet, Math.Max(1, tableRect.width - IndexWidth(sheet) - RowScrollWidth)).Length;
+            int scrollingShown = Math.Max(0, shown - FrozenCount(sheet));
+            int left = sheet.FirstColumn, right = Math.Max(0, ScrollingCount(sheet) - sheet.FirstColumn - scrollingShown);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
                 GUILayout.Label("Columns", GUILayout.Width(70));
                 using (new EditorGUI.DisabledScope(left == 0))
                 {
-                    if (ColumnButton(0, "◀◀", "Move left by one visible window")) sheet.FirstColumn = sheet.Columns.PreviousFirst(sheet.FirstColumn, Math.Max(1, tableRect.width - IndexWidth(sheet) - RowScrollWidth), order: sheet.ColumnOrder);
+                    if (ColumnButton(0, "◀◀", "Move left by one visible window")) sheet.FirstColumn = FrozenCount(sheet) > 0 ? Math.Max(0, sheet.FirstColumn - Math.Max(1, scrollingShown)) : sheet.Columns.PreviousFirst(sheet.FirstColumn, Math.Max(1, tableRect.width - IndexWidth(sheet) - RowScrollWidth), order: sheet.ColumnOrder);
                     if (ColumnButton(1, "◀", "Move left by one column")) sheet.FirstColumn = Math.Max(0, sheet.FirstColumn - 1);
                 }
                 using (new EditorGUI.DisabledScope(right == 0))
                 {
                     if (ColumnButton(2, "▶", "Move right by one column")) sheet.FirstColumn++;
-                    if (ColumnButton(3, "▶▶", "Move right by one visible window")) sheet.FirstColumn += shown;
+                    if (ColumnButton(3, "▶▶", "Move right by one visible window")) sheet.FirstColumn = Math.Min(Math.Max(0, ScrollingCount(sheet) - 1), sheet.FirstColumn + Math.Max(1, scrollingShown));
                 }
                 if (GUILayout.Button("Visibility…", EditorStyles.toolbarButton, GUILayout.Width(75))) ShowColumnVisibility(sheet);
-                GUILayout.Label("Showing " + (left + 1) + "–" + (left + shown) + " / " + VisibleColumnCount(sheet));
+                GUILayout.Label("Showing " + (ScrollingCount(sheet) == 0 ? 0 : left + 1) + "–" + (left + scrollingShown) + " / " + ScrollingCount(sheet) + (FrozenCount(sheet) == 0 ? "" : " + " + FrozenCount(sheet) + " frozen"));
                 GUILayout.FlexibleSpace();
             }
             Rect remaining = GUILayoutUtility.GetRect(1, 16, GUILayout.ExpandWidth(true));
@@ -332,10 +375,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             { Move(sheet, (long)Math.Sign(Event.current.delta.y) * 8); Event.current.Use(); }
             if (rect.width > 1)
             {
-                columnPixels = sheet.Columns.Fit(Math.Max(1, rect.width - indexWidth), sheet.FirstColumn, order: sheet.ColumnOrder);
+                columnPixels = FitTableColumns(sheet, Math.Max(1, rect.width - indexWidth));
                 if (Event.current.type == EventType.Repaint) visibleColumns = columnPixels.Length;
             }
-            int columns = Math.Min(columnPixels.Length, VisibleColumnCount(sheet) - sheet.FirstColumn);
+            int columns = WindowCount(sheet, columnPixels.Length);
             float edge = rect.x + indexWidth;
             for (int c = 0; c < columns; c++)
             {
@@ -343,6 +386,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float width = columnPixels[c];
                 float visibleWidth = Math.Max(1, Math.Min(width, rect.xMax - edge));
                 bool calculated = schemaColumn >= sheet.Dataset.ColumnCount;
+                if (c < FrozenCount(sheet)) EditorGUI.DrawRect(new Rect(edge, rect.y, visibleWidth, rect.height), new Color(.2f, .45f, .55f, .13f));
                 if (calculated) EditorGUI.DrawRect(new Rect(edge, rect.y, visibleWidth, 20), new Color(.4f, .3f, .65f, .25f));
                 GUI.Label(new Rect(edge + 3, rect.y, Math.Max(1, visibleWidth - 8), 20), new GUIContent(calculated ? "ƒ " + sheet.Table.ColumnName(schemaColumn) : sheet.Dataset.GetColumnName(schemaColumn), "Units: " + ColumnUnitLabel(sheet, schemaColumn) + ". No implicit conversion. Drag the right edge to resize; double-click or right-click the edge to reset to Auto."), EditorStyles.boldLabel);
                 ColumnGrip(sheet, schemaColumn, new Rect(edge + visibleWidth - 4, rect.y, 8, 20), width);

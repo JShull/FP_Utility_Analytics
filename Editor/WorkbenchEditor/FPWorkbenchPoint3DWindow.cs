@@ -4,6 +4,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     using System;
     using System.Diagnostics;
     using System.Globalization;
+    using System.IO;
     using System.Threading;
     using System.Threading.Tasks;
     using UnityEditor;
@@ -31,7 +32,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private FPWorkbenchChangeSnapshot edits;
         private string[] names;
         private Task<FPWorkbenchCsvDataset> opening;
+        [SerializeField] private FPWorkbenchCsvProfile sourceProfile;
+        private bool pendingOpening;
+        private FPWorkbenchEditorResources.ScanReservation openingMemory;
         private Task<Batch> building;
+        private Func<Task<Batch>> pendingBuild;
+        private FPWorkbenchEditorResources.ScanReservation buildMemory;
+        private Task<Batch> preparing;
+        private Batch pendingBatch;
+        private FPWorkbenchMemoryBudget.Reservation preparationMemory, batchMemory;
+        private bool windowActive, waitingForMemory;
+        private const long PreparationReservationBytes = 64L * 1024 * 1024;
         private CancellationTokenSource cancellation;
         private PreviewRenderUtility preview;
         private FPWorkbenchPointRenderer renderer;
@@ -44,8 +55,70 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private int[] appliedColumns;
         private bool selected;
         private FPWorkbenchSpatialPoint selection;
+        [SerializeField] private int exportWidth = 1600, exportHeight = 1200;
+        private FPWorkbenchEditorImageJob imageJob;
+        private FPWorkbenchEditorImageJob ImageJob => imageJob ??= new FPWorkbenchEditorImageJob(Repaint);
+        [Serializable] private sealed class ImageProvenance : FPWorkbenchImageProvenance
+        {
+            public string Format = "FuzzPhyte.DataWorkbench.Point3DImage", SourcePath;
+            public int Version = 1, RenderedPoints;
+            public long MatchingPoints;
+            public bool Sampled;
+            public double OriginX, OriginY, OriginZ, SourceUnitsPerLocalUnit, MaximumLocalError;
+            public FPWorkbenchFigureDocument Figure;
+        }
+        private Task<FPWorkbenchImageExportResult> ExportPng(string directory, int width, int height)
+        {
+            if (width < 64 || height < 64 || width > 4096 || height > 4096 || (long)width * height > 4194304)
+                throw new ArgumentOutOfRangeException("Image dimensions must be 64–4096 pixels, at most 4,194,304 pixels total.");
+            if (Busy || batch == null || renderer == null) throw new InvalidOperationException("Wait for a completed point view before exporting.");
+            string output = Path.GetFullPath(directory);
+            if (!output.EndsWith(".fpfigure", StringComparison.OrdinalIgnoreCase) || Directory.Exists(output) || File.Exists(output))
+                throw new IOException("Choose a new .fpfigure output directory; existing outputs are never overwritten.");
+            string parent = Path.GetDirectoryName(output);
+            if (!Directory.Exists(parent)) throw new DirectoryNotFoundException(parent);
+            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, 0);
+            var figure = DescribeFigure(); figure.Validate();
+            var frame = batch.Prepared.Frame;
+            var metadata = new ImageProvenance { SourcePath = dataset.SourcePath, Width = width, Height = height,
+                RenderedPoints = batch.View.Points.Count, MatchingPoints = batch.View.MatchingCount, Sampled = batch.View.Decimated,
+                OriginX = frame.OriginX, OriginY = frame.OriginY, OriginZ = frame.OriginZ, SourceUnitsPerLocalUnit = frame.SourceUnitsPerLocalUnit,
+                MaximumLocalError = batch.Prepared.MaximumLocalError, Figure = figure };
+            PreviewRenderUtility export = null; Texture2D image = null;
+            try {
+                export = new PreviewRenderUtility(); var rect = new Rect(0, 0, width, height);
+                export.BeginStaticPreview(rect); RenderPoints(export, rect); image = export.EndStaticPreview();
+                return reservation.Publish(output, image.GetPixels32(), width, height, metadata, imageJob?.Token ?? default);
+            }
+            finally { if (image != null) DestroyImmediate(image); export?.Cleanup(); }
+        }
+        [SerializeField] private bool showAppearancePresets;
+        private FPWorkbenchPresentationUndoState appearanceUndo;
+        private string observedAppearance;
+        private string AppearanceJson() => new FPWorkbenchPoint3DPreset { Color = pointColor, PointSize = pointSize }.ToJson();
+        private void ApplyAppearancePreset(string json)
+        {
+            var preset = FPWorkbenchPoint3DPreset.Parse(json); string before = AppearanceJson();
+            pointColor = preset.Color; pointSize = preset.PointSize; RecordAppearance(before); Repaint();
+        }
+        private void RecordAppearance(string before)
+        {
+            string after = AppearanceJson(); if (before == after) return;
+            if (appearanceUndo == null) {
+                appearanceUndo = CreateInstance<FPWorkbenchPresentationUndoState>(); appearanceUndo.hideFlags = HideFlags.HideAndDontSave;
+                Undo.undoRedoPerformed += RestoreAppearance;
+            }
+            appearanceUndo.Json = observedAppearance = before; Undo.RegisterCompleteObjectUndo(appearanceUndo, "Change Workbench 3D appearance");
+            appearanceUndo.Json = observedAppearance = after; EditorUtility.SetDirty(appearanceUndo);
+        }
+        private void RestoreAppearance()
+        {
+            if (appearanceUndo == null || appearanceUndo.Json == observedAppearance) return;
+            var preset = FPWorkbenchPoint3DPreset.Parse(appearanceUndo.Json); observedAppearance = appearanceUndo.Json;
+            pointColor = preset.Color; pointSize = preset.PointSize; Repaint();
+        }
         private sealed class Batch { public FPWorkbenchPointCache Cache; public FPWorkbenchPointView View; public FPWorkbenchPreparedPoints Prepared; public int[] Columns; public double Milliseconds; public bool Clip; public FPWorkbenchSpatialBounds Limits; public int Budget; public FPWorkbenchInvalidPolicy Policy; }
-        private bool Busy => opening != null || building != null;
+        private bool Busy => opening != null || pendingOpening || building != null || pendingBuild != null || preparing != null || pendingBatch != null;
         public static FPWorkbenchPoint3DWindow Open(string owner, FPWorkbenchCsvDataset source, int x, int y, int z,
             FPWorkbenchFormulaProgram formulas = null, FPWorkbenchChangeSnapshot corrections = null)
         {
@@ -95,21 +168,33 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnEnable()
         {
+            windowActive = true;
             minSize = new Vector2(760, 520); cancellation = new CancellationTokenSource(); preview = new PreviewRenderUtility();
             EditorApplication.update += Tick;
-            if (!string.IsNullOrEmpty(cacheDirectory)) opening = FPWorkbenchCsvDataset.OpenAsync(cacheDirectory, cancellation.Token);
+            pendingOpening = !string.IsNullOrEmpty(cacheDirectory);
         }
         private void OnDisable()
         {
+            windowActive = false;
+            imageJob?.Dispose(); imageJob = null;
+            Undo.undoRedoPerformed -= RestoreAppearance;
+            if (appearanceUndo != null) { Undo.ClearUndo(appearanceUndo); DestroyImmediate(appearanceUndo); appearanceUndo = null; }
             try { if (dataset != null) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure()); }
             catch (Exception ex) { error = "3D settings not retained: " + ex.Message; }
             EditorApplication.update -= Tick; cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
-            Observe(opening); Observe(building); opening = null; building = null;
+            if (openingMemory != null) openingMemory.ReleaseAfter(opening); else Observe(opening);
+            openingMemory = null; pendingOpening = false;
+            if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
+            buildMemory = null; pendingBuild = null; opening = null; building = null;
+            if (preparationMemory != null) preparationMemory.ReleaseAfter(preparing); else Observe(preparing);
+            preparationMemory = null; preparing = null; pendingBatch = null; waitingForMemory = false;
+            batchMemory?.Dispose(); batchMemory = null;
             renderer?.Dispose(); renderer = null; preview?.Cleanup(); preview = null; batch = null; dataset = null; previewTexture = null;
         }
         private static void Observe(Task task) { if (task != null) task.ContinueWith(t => { _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted); }
         private void Attach(FPWorkbenchCsvDataset source)
         {
+            sourceProfile = source.ImportProfile;
             if (source.DatasetId != datasetId) throw new InvalidOperationException("3D source revision changed.");
             program = string.IsNullOrEmpty(calculations) ? null : FPWorkbenchFormulaProgram.Compile(source, JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations));
             edits = string.IsNullOrEmpty(corrections) ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(corrections).Snapshot();
@@ -124,7 +209,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             try
             {
                 var columns = new[] { xColumn, yColumn, zColumn }; var bounds = clip ? new FPWorkbenchSpatialBounds(minX, maxX, minY, maxY, minZ, maxZ) : default;
-                building = Build(dataset, columns, program, edits, invalidPolicy, pointBudget, clip, bounds, cancellation.Token); error = null;
+                var source = dataset; var formulas = program; var changes = edits; var policy = invalidPolicy;
+                var budget = pointBudget; var clipping = clip; var token = cancellation.Token;
+                pendingBuild = () => Build(source, columns, formulas, changes, policy, budget, clipping, bounds, token); error = null;
+                waitingForMemory = !FPWorkbenchEditorResources.TryStartSource(dataset, ref pendingBuild, ref building, ref buildMemory);
             }
             catch (Exception ex) { error = ex.Message; }
         }
@@ -132,33 +220,80 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             FPWorkbenchInvalidPolicy policy, int budget, bool clip, FPWorkbenchSpatialBounds limits, CancellationToken token)
         {
             var clock = Stopwatch.StartNew(); var cache = await FPWorkbenchPointCache.BuildAsync(source, columns, formulas, changes, policy, token).ConfigureAwait(false);
-            var view = await cache.QueryAsync(clip ? limits : cache.Bounds, budget, token).ConfigureAwait(false);
-            var prepared = await FPWorkbenchPointPreparation.PrepareAsync(view, FPWorkbenchSpatialFrame.Fit(view.Bounds), cancellation: token).ConfigureAwait(false);
-            return new Batch { Cache = cache, View = view, Prepared = prepared, Columns = columns, Clip = clip, Limits = clip ? limits : cache.Bounds, Budget = budget, Policy = policy, Milliseconds = clock.Elapsed.TotalMilliseconds };
+            return new Batch { Cache = cache, Columns = columns, Clip = clip, Limits = clip ? limits : cache.Bounds, Budget = budget, Policy = policy, Milliseconds = clock.Elapsed.TotalMilliseconds };
+        }
+        private static async Task<Batch> Prepare(Batch next, CancellationToken token)
+        {
+            var clock = Stopwatch.StartNew();
+            next.View = await next.Cache.QueryAsync(next.Limits, next.Budget, token).ConfigureAwait(false);
+            next.Prepared = await FPWorkbenchPointPreparation.PrepareAsync(next.View, FPWorkbenchSpatialFrame.Fit(next.View.Bounds), cancellation: token).ConfigureAwait(false);
+            next.Milliseconds += clock.Elapsed.TotalMilliseconds; return next;
         }
         private void Tick()
         {
+            if (!windowActive) return;
+            if (pendingOpening) {
+                try { pendingOpening = !FPWorkbenchEditorResources.TryOpenCache(cacheDirectory, sourceProfile, cancellation.Token, ref opening, ref openingMemory); waitingForMemory = pendingOpening; }
+                catch (Exception ex) { pendingOpening = false; waitingForMemory = false; error = ex.Message; }
+                Repaint();
+            }
+            if (pendingBuild != null) {
+                try { waitingForMemory = !FPWorkbenchEditorResources.TryStartSource(dataset, ref pendingBuild, ref building, ref buildMemory); }
+                catch (Exception ex) { waitingForMemory = false; error = ex.Message; }
+                Repaint();
+            }
             if (opening != null && opening.IsCompleted)
             {
                 var work = opening; opening = null;
+                openingMemory?.Dispose(); openingMemory = null;
                 try { Attach(work.GetAwaiter().GetResult()); BeginBuild(); } catch (Exception ex) { error = ex.Message; } Repaint();
             }
             if (building != null && building.IsCompleted)
             {
                 var work = building; building = null;
+                buildMemory?.Dispose(); buildMemory = null;
+                try { pendingBatch = work.GetAwaiter().GetResult(); }
+                catch (Exception ex) { error = ex.Message; } Repaint();
+            }
+            if (preparing != null && preparing.IsCompleted)
+            {
+                var work = preparing; preparing = null;
                 try
                 {
                     var next = work.GetAwaiter().GetResult(); renderer ??= new FPWorkbenchPointRenderer(Shader.Find("Hidden/FuzzPhyte/Workbench/Points"));
                     var clock = Stopwatch.StartNew(); renderer.SetPoints(next.Prepared); uploadMilliseconds = clock.Elapsed.TotalMilliseconds;
+                    batchMemory?.Dispose(); batchMemory = preparationMemory; preparationMemory = null;
+                    // Covers retained point/prepared arrays and estimated readable mesh plus GPU payload, not actual driver allocation.
+                    batchMemory.Complete(checked(4096L + next.View.Points.Count * 64L + next.Prepared.Positions.Count * 320L));
                     batch = next; appliedColumns = next.Columns; selected = false;
                 }
-                catch (Exception ex) { error = ex.Message; } Repaint();
+                catch (Exception ex) { error = ex.Message; }
+                preparationMemory?.Dispose(); preparationMemory = null; Repaint();
+            }
+            if (pendingBatch != null && preparing == null) {
+                bool admitted = FPWorkbenchEditorResources.Memory.TryAcquire(PreparationReservationBytes, out preparationMemory);
+                if (waitingForMemory != !admitted) { waitingForMemory = !admitted; Repaint(); }
+                if (admitted) {
+                    var next = pendingBatch; pendingBatch = null;
+                    try { preparing = Prepare(next, cancellation.Token); }
+                    catch (Exception ex) { preparationMemory.Dispose(); preparationMemory = null; error = ex.Message; }
+                }
             }
             if (Busy) Repaint();
         }
+        private void CancelPointUpdate()
+        {
+            if (building == null && pendingBuild == null && preparing == null && pendingBatch == null) return;
+            cancellation.Cancel(); cancellation.Dispose(); cancellation = new CancellationTokenSource();
+            if (buildMemory != null) buildMemory.ReleaseAfter(building); else Observe(building);
+            buildMemory = null; pendingBuild = null; building = null;
+            if (preparationMemory != null) preparationMemory.ReleaseAfter(preparing); else Observe(preparing);
+            preparationMemory = null; preparing = null; pendingBatch = null; waitingForMemory = false;
+            error = "Point update cancelled; previous view retained."; Repaint();
+        }
         private void OnGUI()
         {
-            if (dataset == null) { EditorGUILayout.HelpBox(error ?? "Verifying XYZ source…", MessageType.Info); return; }
+            if (dataset == null) { EditorGUILayout.HelpBox(error ?? (pendingOpening ? "Waiting for shared memory/background capacity…" : "Verifying XYZ source…"), MessageType.Info); return; }
             using (new EditorGUI.DisabledScope(Busy))
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -174,8 +309,26 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 GUILayout.Label("Budget", GUILayout.Width(45)); pointBudget = Mathf.Clamp(EditorGUILayout.IntField(pointBudget, GUILayout.Width(65)), 1, 65536);
                 invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup(invalidPolicy, GUILayout.Width(70));
             }
+            string beforeAppearance = AppearanceJson();
             using (new EditorGUILayout.HorizontalScope())
             { pointColor = EditorGUILayout.ColorField("Point color", pointColor); pointSize = EditorGUILayout.Slider("Pixels", pointSize, 1, 32); }
+            RecordAppearance(beforeAppearance);
+            imageJob?.Draw();
+            showAppearancePresets = EditorGUILayout.Foldout(showAppearancePresets, "Appearance presets", true);
+            if (showAppearancePresets) FPWorkbenchPlotPresetGUI.DrawFileActions(AppearanceJson, ApplyAppearancePreset, "3D appearance preset", "fp3dplot", FPWorkbenchPoint3DPreset.MaximumBytes);
+            if (showAppearancePresets) {
+                using (new EditorGUILayout.HorizontalScope()) {
+                    exportWidth = EditorGUILayout.IntField("PNG width", exportWidth); exportHeight = EditorGUILayout.IntField("Height", exportHeight);
+                    using (new EditorGUI.DisabledScope(Busy || batch == null || FPWorkbenchImageExport.IsActive))
+                        if (GUILayout.Button("Export PNG…")) {
+                            string path = EditorUtility.SaveFilePanel("Export 3D image and provenance", "", "PointFigure", "fpfigure");
+                            if (!string.IsNullOrEmpty(path)) { int w = exportWidth, h = exportHeight; EditorApplication.delayCall += () => {
+                                if (this == null) return;
+                                ImageJob.Start(() => ExportPng(path, w, h));
+                            }; }
+                        }
+                }
+            }
             showClip = EditorGUILayout.Foldout(showClip, "Source-coordinate clipping (Apply to query)", true);
             if (showClip)
             {
@@ -189,12 +342,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (error != null) EditorGUILayout.HelpBox(error, MessageType.Warning);
             if (Busy)
             {
-                GUILayout.Label("Building/verifying/querying XYZ cache and preparing local points…", EditorStyles.miniLabel);
-                if (building != null && GUILayout.Button("Cancel point update"))
-                {
-                    cancellation.Cancel(); cancellation.Dispose(); cancellation = new CancellationTokenSource();
-                    Observe(building); building = null; error = "Point update cancelled; previous view retained.";
-                }
+                GUILayout.Label(waitingForMemory ? "Waiting for shared view memory/read capacity…" : "Building/verifying/querying XYZ cache and preparing local points…", EditorStyles.miniLabel);
+                if (GUILayout.Button("Cancel point update")) CancelPointUpdate();
             }
             if (batch != null)
             {
@@ -244,18 +393,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             }
             if (e.type == EventType.Repaint)
             {
-                preview.BeginPreview(rect, GUIStyle.none); Camera camera = preview.camera; var bounds = renderer.Mesh.bounds;
-                camera.backgroundColor = new Color(.1f, .1f, .1f); camera.clearFlags = CameraClearFlags.Color; camera.fieldOfView = FPMeshPreviewEditorUtility.DefaultFieldOfView;
-                float distance = FPMeshPreviewEditorUtility.CalculateFitDistance(bounds, rect) * zoom;
-                camera.transform.SetPositionAndRotation(bounds.center + pan - orbit * Vector3.forward * distance, orbit);
-                camera.orthographic = projection == FPMeshPreviewProjection.Orthographic;
-                camera.orthographicSize = FPMeshPreviewEditorUtility.CalculateOrthographicSize(bounds, rect, orbit) * zoom;
-                float radius = Math.Max(.1f, bounds.extents.magnitude); camera.nearClipPlane = Math.Max(.001f, distance - radius * 2.4f); camera.farClipPlane = distance + radius * 3.4f;
-                renderer.SetAppearance(pointColor, pointSize); preview.DrawMesh(renderer.Mesh, Matrix4x4.identity, renderer.Material, 0); preview.Render(true);
+                preview.BeginPreview(rect, GUIStyle.none); RenderPoints(preview, rect); Camera camera = preview.camera;
                 previewTexture = preview.EndPreview(); GUI.DrawTexture(rect, previewTexture, ScaleMode.StretchToFill, false);
                 FPMeshPreviewEditorUtility.DrawSceneOrientationGizmo(rect, camera, projection);
             }
             FPMeshPreviewEditorUtility.DrawOrbitGizmo(rect, (direction, up) => { orbit = Quaternion.LookRotation(direction, up); Repaint(); });
+        }
+        private void RenderPoints(PreviewRenderUtility target, Rect rect)
+        {
+            Camera camera = target.camera; var bounds = renderer.Mesh.bounds;
+            camera.backgroundColor = new Color(.1f, .1f, .1f); camera.clearFlags = CameraClearFlags.Color; camera.fieldOfView = FPMeshPreviewEditorUtility.DefaultFieldOfView;
+            float distance = FPMeshPreviewEditorUtility.CalculateFitDistance(bounds, rect) * zoom;
+            camera.transform.SetPositionAndRotation(bounds.center + pan - orbit * Vector3.forward * distance, orbit);
+            camera.orthographic = projection == FPMeshPreviewProjection.Orthographic;
+            camera.orthographicSize = FPMeshPreviewEditorUtility.CalculateOrthographicSize(bounds, rect, orbit) * zoom;
+            float radius = Math.Max(.1f, bounds.extents.magnitude); camera.nearClipPlane = Math.Max(.001f, distance - radius * 2.4f); camera.farClipPlane = distance + radius * 3.4f;
+            renderer.SetAppearance(pointColor, pointSize); target.DrawMesh(renderer.Mesh, Matrix4x4.identity, renderer.Material, 0); target.Render(true);
         }
         private void Inspect(Rect rect, Vector2 mouse)
         {

@@ -44,9 +44,42 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 Assert.That(((FPWorkbenchSpatialPoint)type.GetField("selection", flags).GetValue(window)).Row, Is.Zero);
                 Assert.Throws<ArgumentOutOfRangeException>(() => renderer.SetAppearance(Color.cyan, 0));
                 type.GetField("zoom", flags).SetValue(window, 2f); type.GetField("pan", flags).SetValue(window, new Vector3(.25f, 0, 0));
+                Undo.IncrementCurrentGroup();
+                type.GetMethod("ApplyAppearancePreset", flags).Invoke(window, new object[] { new FPWorkbenchPoint3DPreset { Color = Color.magenta, PointSize = 9 }.ToJson() });
+                Assert.That(type.GetField("renderer", flags).GetValue(window), Is.SameAs(renderer)); Assert.That(Busy(window), Is.False);
+                Undo.FlushUndoRecordObjects(); Undo.PerformUndo(); Assert.That(type.GetField("pointSize", flags).GetValue(window), Is.EqualTo(4f));
+                Undo.PerformRedo(); Assert.That(type.GetField("pointSize", flags).GetValue(window), Is.EqualTo(9f));
+                Assert.That(type.GetField("pointColor", flags).GetValue(window), Is.EqualTo(Color.magenta));
+                Assert.That(type.GetField("zoom", flags).GetValue(window), Is.EqualTo(2f));
+                Assert.That(((Vector3)type.GetField("pan", flags).GetValue(window)).x, Is.EqualTo(.25f));
+                Assert.That(type.GetField("xColumn", flags).GetValue(window), Is.EqualTo(0)); Assert.That(type.GetField("pointBudget", flags).GetValue(window), Is.EqualTo(10000));
                 var descriptor = (FPWorkbenchFigureDocument)type.GetMethod("DescribeFigure", flags).Invoke(window, null);
                 Assert.That(descriptor.Kind, Is.EqualTo(FPWorkbenchFigureKind.Point3D)); Assert.That(descriptor.Spatial.ZColumn, Is.EqualTo(2));
                 Assert.That(descriptor.Spatial.Zoom, Is.EqualTo(2)); descriptor.Validate();
+                Assert.That(descriptor.Spatial.PointSize, Is.EqualTo(9)); Assert.That(descriptor.Colors[0], Is.EqualTo(Color.magenta));
+                string imageOutput = Path.Combine(root, "points.fpfigure");
+                var cameraPosition = preview.camera.transform.position; var activeTexture = RenderTexture.active;
+                var pngWork0 = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)type.GetMethod("ExportPng", flags).Invoke(window, new object[] { imageOutput, 640, 480 });
+                Assert.That(preview.camera.transform.position, Is.EqualTo(cameraPosition)); Assert.That(RenderTexture.active, Is.SameAs(activeTexture));
+                while (!pngWork0.IsCompleted) yield return null; pngWork0.GetAwaiter().GetResult();
+                Assert.That(type.GetField("zoom", flags).GetValue(window), Is.EqualTo(2f)); Assert.That(Busy(window), Is.False);
+                var exportedImage = new Texture2D(2, 2);
+                try {
+                    Assert.That(exportedImage.LoadImage(File.ReadAllBytes(Path.Combine(imageOutput, "figure.png"))), Is.True);
+                    Assert.That(exportedImage.width, Is.EqualTo(640)); Assert.That(exportedImage.height, Is.EqualTo(480));
+                    int magenta = 0; foreach (var pixel in exportedImage.GetPixels32()) if (pixel.r > pixel.g + 30 && pixel.b > pixel.g + 30) magenta++;
+                    Assert.That(magenta, Is.GreaterThan(5), "Export must contain the rendered point appearance.");
+                } finally { UnityEngine.Object.DestroyImmediate(exportedImage); }
+                var provenance = JsonUtility.FromJson(File.ReadAllText(Path.Combine(imageOutput, "provenance.json")), type.GetNestedType("ImageProvenance", BindingFlags.NonPublic));
+                Assert.That(provenance.GetType().GetField("Width").GetValue(provenance), Is.EqualTo(640));
+                Assert.That(provenance.GetType().GetField("RenderedPoints").GetValue(provenance), Is.EqualTo(3));
+                Assert.That(provenance.GetType().GetField("SourcePath").GetValue(provenance), Is.EqualTo(data.SourcePath));
+                using (var hash = System.Security.Cryptography.SHA256.Create())
+                    Assert.That(provenance.GetType().GetField("PngSha256Base64").GetValue(provenance), Is.EqualTo(Convert.ToBase64String(hash.ComputeHash(File.ReadAllBytes(Path.Combine(imageOutput, "figure.png"))))));
+                Assert.That(Assert.Throws<TargetInvocationException>(() => type.GetMethod("ExportPng", flags).Invoke(window, new object[] { imageOutput, 640, 480 })).InnerException, Is.TypeOf<IOException>());
+                string invalidOutput = Path.Combine(root, "invalid.fpfigure");
+                Assert.That(Assert.Throws<TargetInvocationException>(() => type.GetMethod("ExportPng", flags).Invoke(window, new object[] { invalidOutput, 4096, 4096 })).InnerException, Is.TypeOf<ArgumentOutOfRangeException>());
+                Assert.That(Directory.Exists(invalidOutput), Is.False);
                 string json = EditorJsonUtility.ToJson(window); Mesh ownedMesh = renderer.Mesh; Material ownedMaterial = renderer.Material;
                 window.Close(); UnityEngine.Object.DestroyImmediate(window); window = null;
                 Assert.That(ownedMesh == null, Is.True); Assert.That(ownedMaterial == null, Is.True);

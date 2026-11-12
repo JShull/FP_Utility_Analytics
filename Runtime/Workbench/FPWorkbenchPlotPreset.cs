@@ -6,6 +6,66 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     using System.Text;
     using UnityEngine;
 
+    /// <summary>Reusable billboard appearance; excludes camera, source, clipping and point budgets.</summary>
+    [Serializable] public sealed class FPWorkbenchPoint3DPreset
+    {
+        public string Format = "FuzzPhyte.DataWorkbench.Point3DPreset";
+        public int Version = 1;
+        public Color Color = new Color(0, .7f, 1);
+        public float PointSize = 4;
+        public const int MaximumBytes = 2048;
+        public void Validate()
+        {
+            bool Unit(float value) => !float.IsNaN(value) && !float.IsInfinity(value) && value >= 0 && value <= 1;
+            if (Format != "FuzzPhyte.DataWorkbench.Point3DPreset" || Version != 1 || !Unit(Color.r) || !Unit(Color.g) || !Unit(Color.b) || !Unit(Color.a) ||
+                float.IsNaN(PointSize) || float.IsInfinity(PointSize) || PointSize < 1 || PointSize > 32)
+                throw new InvalidDataException("Invalid 3D point appearance preset: use finite RGBA [0,1] and size [1,32].");
+        }
+        public string ToJson() { Validate(); return JsonUtility.ToJson(this, true); }
+        public static FPWorkbenchPoint3DPreset Parse(string json)
+        {
+            if (string.IsNullOrEmpty(json) || Encoding.UTF8.GetByteCount(json) > MaximumBytes) throw new InvalidDataException("3D point preset is empty or exceeds 2 KiB.");
+            try {
+                var marker = JsonUtility.FromJson<PointMarker>(json);
+                if (marker.Format != "FuzzPhyte.DataWorkbench.Point3DPreset" || marker.Version != 1) throw new InvalidDataException("Not a supported 3D point appearance preset.");
+                var preset = JsonUtility.FromJson<FPWorkbenchPoint3DPreset>(json); preset.Validate(); return preset;
+            } catch (ArgumentException ex) { throw new InvalidDataException("Invalid 3D point preset JSON.", ex); }
+        }
+        [Serializable] private struct PointMarker { public string Format; public int Version; }
+    }
+
+    /// <summary>Histogram appearance only; never carries bins, bounds, rows or source policy.</summary>
+    [Serializable] public sealed class FPWorkbenchHistogramPreset
+    {
+        public string Format = "FuzzPhyte.DataWorkbench.HistogramPreset";
+        public int Version = 1;
+        public bool Density, Grid = true;
+        public const int MaximumBytes = 1024;
+        public string ToJson()
+        {
+            Validate(); return JsonUtility.ToJson(this, true);
+        }
+        public void Validate()
+        {
+            if (Format != "FuzzPhyte.DataWorkbench.HistogramPreset" || Version != 1)
+                throw new InvalidDataException("Not a supported histogram presentation preset.");
+        }
+        public static FPWorkbenchHistogramPreset Parse(string json)
+        {
+            if (string.IsNullOrEmpty(json) || Encoding.UTF8.GetByteCount(json) > MaximumBytes)
+                throw new InvalidDataException("Histogram preset is empty or exceeds 1 KiB.");
+            try
+            {
+                var marker = JsonUtility.FromJson<HistogramMarker>(json);
+                if (marker.Format != "FuzzPhyte.DataWorkbench.HistogramPreset" || marker.Version != 1)
+                    throw new InvalidDataException("Not a supported histogram presentation preset.");
+                var preset = JsonUtility.FromJson<FPWorkbenchHistogramPreset>(json); preset.Validate(); return preset;
+            }
+            catch (ArgumentException ex) { throw new InvalidDataException("Invalid histogram preset JSON.", ex); }
+        }
+        [Serializable] private struct HistogramMarker { public string Format; public int Version; }
+    }
+
     /// <summary>Portable presentation only; excludes source identities, corrections and viewport limits.</summary>
     [Serializable] public sealed class FPWorkbenchPlotPreset
     {
@@ -40,6 +100,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (YScale == FPWorkbenchAxisScale.Log10 && s.LockY) FPWorkbenchAxis.Validate(s.MinimumY, s.MaximumY, YScale);
             s.XScale = XScale; s.YScale = YScale; s.Title = Title; s.XLabel = XLabel; s.YLabel = YLabel; s.Style = Style; s.LineWidth = LineWidth;
             s.MarkerSize = MarkerSize; s.Grid = Grid; s.InvertY = InvertY; s.XTickSpacing = XTickSpacing; s.YTickSpacing = YTickSpacing;
+        }
+        /// <summary>Apply only Y-axis presentation, retaining limits, locks and all shared-X/series controls.</summary>
+        public void ApplyY(FPWorkbenchPlotSettings s)
+        {
+            if (s == null) throw new ArgumentNullException(nameof(s)); Validate();
+            if (YScale == FPWorkbenchAxisScale.Log10 && s.LockY) FPWorkbenchAxis.Validate(s.MinimumY, s.MaximumY, YScale);
+            s.YScale = YScale; s.YLabel = YLabel; s.YTickSpacing = YTickSpacing;
+            s.Grid = Grid; s.InvertY = InvertY;
         }
         public string ToJson() { Validate(); return JsonUtility.ToJson(this, true); }
         public static FPWorkbenchPlotPreset Parse(string json)
