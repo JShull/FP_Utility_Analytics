@@ -17,6 +17,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public int FirstColumn, PlotColumn;
         public bool ShowPlot;
         public bool ShowOriginal;
+        public bool CellGrid;
+        public float CellGridOpacity = .35f;
         public FPWorkbenchCsvProfile Import = new FPWorkbenchCsvProfile();
         public FPWorkbenchSeriesBinding Binding = new FPWorkbenchSeriesBinding();
         public FPWorkbenchPlotSettings Plot = new FPWorkbenchPlotSettings();
@@ -43,6 +45,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             {
                 if (sheet == null || string.IsNullOrEmpty(sheet.Id) || sheet.Id.Length > 128 || !ids.Add(sheet.Id) || string.IsNullOrEmpty(sheet.Name) || sheet.Name.Length > 512 || string.IsNullOrEmpty(sheet.DatasetId) || sheet.DatasetId.Length > 256 || string.IsNullOrEmpty(sheet.SourcePath) || string.IsNullOrEmpty(sheet.CacheDirectory) || sheet.SourcePath.Length > 8192 || sheet.CacheDirectory.Length > 8192 || sheet.FirstRow < 0 || sheet.FirstColumn < 0 || sheet.PlotColumn < 0 || sheet.Import == null || sheet.Binding == null || sheet.Plot == null || sheet.Columns == null)
                     throw new InvalidDataException("Invalid sheet identity, source, layout or binding.");
+                if (float.IsNaN(sheet.CellGridOpacity) || float.IsInfinity(sheet.CellGridOpacity) || sheet.CellGridOpacity < 0 || sheet.CellGridOpacity > 1) throw new InvalidDataException("Cell grid opacity must be between 0 and 1.");
                 sheet.Import.Copy();
                 try { sheet.Binding.Copy(sheet.Import.MaximumColumns); }
                 catch (ArgumentException ex) { throw new InvalidDataException("Invalid sheet plot binding.", ex); }

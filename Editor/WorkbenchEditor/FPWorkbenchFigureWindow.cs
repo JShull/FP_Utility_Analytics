@@ -10,7 +10,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
     public sealed partial class FPWorkbenchFigureWindow : EditorWindow
     {
         private FPWorkbenchPresentationUndo presentationUndo;
-        [SerializeField] private bool showFigureSettings;
+        [SerializeField] private string[] sourceColumnNames;
         [SerializeField] private string figureId, metadata, corrections;
         [SerializeField] private string calculations;
         private FPWorkbenchSheetDocument document;
@@ -25,14 +25,16 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         public static FPWorkbenchFigureWindow Open(string id, FPWorkbenchSheetDocument document, FPWorkbenchCsvDataset dataset, FPWorkbenchFormulaProgram program = null)
         {
             var window = CreateInstance<FPWorkbenchFigureWindow>(); window.figureId = id;
+            window.SetSourceNames(dataset);
             window.document = document; window.metadata = JsonUtility.ToJson(document);
             window.calculations = program == null ? null : JsonUtility.ToJson(program.Definition);
             window.lease = FPWorkbenchFigureRegistry.Retain(id, dataset, document.Binding, document.Plot, calculations: program);
-            window.titleContent = new GUIContent(document.Name + " — Figure"); window.Show(); return window;
+            window.titleContent = new GUIContent(document.Name + " — Plot"); window.Show(); return window;
         }
         private void OnEnable()
         {
             windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
+            InitializeBindingUndo(); graphSelection = new FPWorkbenchGraphSelection(this);
             minSize = new Vector2(420, 260);
             EditorApplication.update += Tick; AssemblyReloadEvents.beforeAssemblyReload += Capture;
             if (string.IsNullOrEmpty(figureId) || string.IsNullOrEmpty(metadata)) return;
@@ -48,6 +50,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void OnDisable()
         {
             if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable);
+            CancelPointInspection(true); graphSelection?.Dispose(); graphSelection = null; DisposeBindingUndo();
             imageJob?.Dispose(); imageJob = null;
             presentationUndo?.Dispose(); presentationUndo = null;
             Capture(); EditorApplication.update -= Tick; AssemblyReloadEvents.beforeAssemblyReload -= Capture;
@@ -82,6 +85,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     {
                         try
                         {
+                            SetSourceNames(opening.Result);
                             var program = string.IsNullOrEmpty(calculations) ? null : FPWorkbenchFormulaProgram.Compile(opening.Result, JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations));
                             lease = FPWorkbenchFigureRegistry.Retain(figureId, opening.Result, document.Binding, document.Plot,
                                 string.IsNullOrEmpty(corrections) ? null : JsonUtility.FromJson<FPWorkbenchChangeSet>(corrections).Snapshot(), program);
@@ -96,6 +100,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (lease == null) return;
             var session = lease.Session; bool changed = session.Poll();
             if (session.Revision != lastRevision) { lastRevision = session.Revision; changed = true; }
+            if (TickPointInspection(session)) changed = true;
             if (changed || session.IsBusy) Repaint();
         }
         private void OnGUI()
@@ -105,30 +110,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var session = lease.Session;
             var rows = session.RequestedBinding.Rows;
             if (rows.Enabled) GUILayout.Label("Inherited sheet rows: " + (rows.FirstRow + 1).ToString("N0") + " - " + rows.EndRow.ToString("N0") + " (table row numbers)", EditorStyles.miniLabel);
-            presentationUndo ??= new FPWorkbenchPresentationUndo(Repaint);
-            presentationUndo.Begin(session.Settings);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
                 if (GUILayout.Button("Fit X", EditorStyles.toolbarButton) && session.Series != null) session.Settings.Fit(session.Series.FirstX, session.Series.LastX);
-                session.Settings.InvertY = GUILayout.Toggle(session.Settings.InvertY, "Invert Y", EditorStyles.toolbarButton);
-                FPWorkbenchPlotView.StyleControls(session.Settings, true);
-                session.Settings.Grid = GUILayout.Toggle(session.Settings.Grid, "Grid", EditorStyles.toolbarButton);
+                if (GUILayout.Button("Plot Settings…", EditorStyles.toolbarButton)) FPWorkbenchPlotSettingsWindow.Open(this);
+                if (GUILayout.Button("Export PNG…", EditorStyles.toolbarButton)) { showImageExport = true; FPWorkbenchPlotSettingsWindow.OpenExport(this); }
                 GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Close figure view", EditorStyles.toolbarButton)) { Close(); return; }
+                if (GUILayout.Button("Close plot view", EditorStyles.toolbarButton)) { Close(); return; }
             }
-            showFigureSettings = EditorGUILayout.Foldout(showFigureSettings, "Figure settings", true);
-            if (showFigureSettings)
-            {
-                FPWorkbenchPlotView.LabelControls(session.Settings);
-                FPWorkbenchPlotView.StyleControls(session.Settings);
-                session.Settings.XTickSpacing = EditorGUILayout.DoubleField("X grid spacing", session.Settings.XTickSpacing);
-                session.Settings.YTickSpacing = EditorGUILayout.DoubleField("Y grid spacing", session.Settings.YTickSpacing);
-            }
-            presentationUndo.End();
-            DrawImageExport(session);
+            DrawPointInspectionControls();
+            GUILayout.Label("Click inspect • middle-drag pan • wheel zoom", EditorStyles.miniLabel);
             if (session.Error != null) EditorGUILayout.HelpBox(session.Error.Message, MessageType.Error);
             Rect plot = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
             FPWorkbenchPlotView.Draw(plot, session.View, session.Settings, (session.ChangeSnapshot == null ? "Original • " : "Effective • ") + session.YName);
+            DrawPointInspection(plot, session);
+            if (FPDataWorkbenchWindow.FindPlotOwner(figureId, out var owner, out var sheetId)) owner.DrawPlotColumnDrops(sheetId, plot);
             if (session.IsBusy) GUI.Label(new Rect(plot.x + 80, plot.y + 20, plot.width - 90, 20), session.WaitingForMemory ? "Waiting for shared memory/background capacity…" : "Updating cached view…", EditorStyles.miniLabel);
         }
     }

@@ -117,6 +117,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float y = rect.y + (r + 1) * 20, edge = rect.x + indexWidth;
                 DrawLinkedRow(sheet, virtualPage.FirstRow + r, new Rect(rect.x, y, rect.width, 20));
                 if (indexWidth > 0) GUI.Label(new Rect(rect.x + 3, y, indexWidth - 6, 20), (virtualPage.FirstRow + r + 1).ToString(CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+                if (indexWidth > 0) DrawLinkedCell(sheet, virtualPage.FirstRow + r, -1, new Rect(rect.x + 1, y, indexWidth - 2, 20));
                 for (int c = 0; c < columns; c++)
                 {
                     Rect cellRect = new Rect(edge + 3, y, Math.Max(1, Math.Min(columnPixels[c] - 6, rect.xMax - edge - 3)), 20); edge += columnPixels[c];

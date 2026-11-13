@@ -12,6 +12,37 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchFigureTests
     {
+        [Test] public void AggregatedStylesRenderDistinctGeometryAndHonorPointSize()
+        {
+            var view = new FPWorkbenchSeriesView();
+            void Set(string name, object value) => view.GetType().GetProperty(name).SetValue(view, value);
+            Set("StartX", 0d); Set("EndX", 10d); Set("Minimum", 0d); Set("Maximum", 10d);
+            Set("Bins", new[] { new FPWorkbenchSeriesBin { Count = 20, FirstIndex = 0, EndIndex = 20, FirstX = 1, LastX = 9, FirstY = 2, LastY = 8, Minimum = 1, Maximum = 9 } });
+            var settings = new FPWorkbenchPlotSettings { StartX = 0, EndX = 10, LockY = true, MinimumY = 0, MaximumY = 10, MarkerSize = 3 };
+            var render = typeof(FPWorkbenchFigureWindow).GetMethod("RenderScalarImage", BindingFlags.Static | BindingFlags.NonPublic);
+            bool[] Pixels(FPWorkbenchPlotStyle style) {
+                settings.Style = style;
+                object[] arguments = { view, settings, "Fixture", 640, 480, false, 0 };
+                var image = (Texture2D)render.Invoke(null, arguments);
+                try {
+                    Assert.That(arguments[5], Is.True, "Overview remains explicitly aggregated.");
+                    var pixels = image.GetPixels32(); var mask = new bool[pixels.Length];
+                    for (int i = 0; i < pixels.Length; i++) mask[i] = pixels[i].b > pixels[i].r + 30 && pixels[i].g > pixels[i].r + 30;
+                    return mask;
+                } finally { UnityEngine.Object.DestroyImmediate(image); }
+            }
+            var line = Pixels(FPWorkbenchPlotStyle.Line); var step = Pixels(FPWorkbenchPlotStyle.Step); var points = Pixels(FPWorkbenchPlotStyle.Points);
+            int Count(bool[] pixels) => Array.FindAll(pixels, p => p).Length;
+            Assert.That(Count(line), Is.GreaterThan(Count(points) + 100));
+            Assert.That(Count(step), Is.GreaterThan(Count(points) + 100));
+            Assert.That(step, Is.Not.EqualTo(line), "Step must retain its horizontal/vertical endpoint trace.");
+            settings.MarkerSize = 9;
+            Assert.That(Count(Pixels(FPWorkbenchPlotStyle.Points)), Is.GreaterThan(Count(points) * 2));
+            Set("Representatives", new[] { new FPWorkbenchSeriesPoint(1, 2, 0, false), new FPWorkbenchSeriesPoint(3, 1, 5, false), new FPWorkbenchSeriesPoint(5, 9, 10, false), new FPWorkbenchSeriesPoint(9, 8, 19, false) });
+            var bins = (FPWorkbenchSeriesBin[])view.GetType().GetProperty("Bins").GetValue(view); bins[0].RepresentativeCount = 4;
+            settings.MarkerSize = 1; int smallLine = Count(Pixels(FPWorkbenchPlotStyle.Line)); settings.MarkerSize = 12;
+            Assert.That(Count(Pixels(FPWorkbenchPlotStyle.Line)), Is.GreaterThan(smallLine + 100), "Line also draws adjustable markers at represented source samples.");
+        }
         [Test] public void ScalarImageOmitsMixedLogBinsAndDoesNotConnectAcrossGaps()
         {
             var view = new FPWorkbenchSeriesView();

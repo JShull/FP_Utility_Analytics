@@ -55,9 +55,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 column >= sheet.Dataset.ColumnCount || columnId != new FPWorkbenchCell(sheet.Dataset.DatasetId, 0, column).ColumnId) return false;
             sheet.Binding ??= new FPWorkbenchSeriesBinding();
             EnsurePlotUndo(sheet);
-            if (x) { sheet.Binding.XMode = FPWorkbenchXMode.Numeric; sheet.Binding.XColumn = column; sheet.Binding.XDerivedId = ""; }
+            if (x) { bool sameUtc = sheet.Binding.XMode == FPWorkbenchXMode.UtcDateTime && sheet.Binding.XColumn == column; if (!sameUtc) sheet.Binding.XMode = FPWorkbenchXMode.Numeric; sheet.Binding.XColumn = column; sheet.Binding.XDerivedId = ""; }
             else { sheet.PlotColumn = column; sheet.Binding.YDerivedId = ""; }
-            status = "Column assigned to " + (x ? "X" : "Y") + ". Use Apply binding / build plot to display it.";
+            StartSeries(sheet, true);
+            if (error == null) status = "Column assigned to " + (x ? "X" : "Y") + "; updating plot…";
             Repaint(); return true;
         }
         private static int DerivedDropColumn(Sheet sheet, string columnId, string derivedId)
@@ -76,7 +77,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             EnsurePlotUndo(sheet);
             if (x) { sheet.Binding.XMode = FPWorkbenchXMode.Numeric; sheet.Binding.XColumn = 0; sheet.Binding.XDerivedId = derivedId; }
             else { sheet.PlotColumn = column; sheet.Binding.YDerivedId = derivedId; }
-            status = "Calculated column assigned to " + (x ? "numeric X" : "Y") + ". Use Apply binding / build plot to display it."; Repaint(); return true;
+            StartSeries(sheet, true);
+            if (error == null) status = "Calculated column assigned to " + (x ? "numeric X" : "Y") + "; updating plot…"; Repaint(); return true;
+        }
+        internal void DrawPlotColumnDrops(string sheetId, Rect rect)
+        {
+            var sheet = sheets.Find(s => s.Id == sheetId); if (sheet?.Dataset != null) DrawColumnDropTargets(sheet, rect);
         }
         private void DrawColumnDropTargets(Sheet sheet, Rect plot)
         {

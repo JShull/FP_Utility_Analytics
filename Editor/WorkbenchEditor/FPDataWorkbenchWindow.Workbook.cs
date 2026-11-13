@@ -56,6 +56,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 Id = sheet.Id, Name = sheet.Name, SourcePath = sheet.Dataset.SourcePath, CacheDirectory = sheet.Cache, DatasetId = sheet.Dataset.DatasetId,
                 FirstRow = sheet.FirstRow, FirstColumn = sheet.FirstColumn, PlotColumn = series == null ? sheet.PlotColumn : PlotColumnForBinding(sheet, binding),
+                CellGrid = sheet.CellGrid, CellGridOpacity = sheet.CellGridOpacity,
                 Selection = sheet.Selection, Import = sheet.Dataset.ImportProfile, Binding = binding, Plot = sheet.Plot, Columns = sheet.Columns, ShowPlot = sheet.ShowPlot, ShowOriginal = sheet.ShowOriginal
             };
         }
@@ -137,7 +138,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     DiskLease = data.RetainCache(),
                     FirstRow = saved.FirstRow, FirstColumn = saved.FirstColumn, PlotColumn = saved.PlotColumn, Binding = saved.Binding,
                     Selection = saved.Selection, RangeAnchorRow = saved.Selection?.FirstRow ?? 0,
-                    RangeAnchorColumn = saved.Selection?.ColumnIds[0], Plot = saved.Plot, ShowPlot = saved.ShowPlot, ShowOriginal = saved.ShowOriginal, Columns = saved.Columns, Lifetime = new CancellationTokenSource(),
+                    RangeAnchorColumn = saved.Selection?.ColumnIds[0], Plot = saved.Plot, ShowPlot = saved.ShowPlot, ShowOriginal = saved.ShowOriginal, CellGrid = saved.CellGrid, CellGridOpacity = saved.CellGridOpacity, Columns = saved.Columns, Lifetime = new CancellationTokenSource(),
                     ColumnNames = new string[data.ColumnCount]
                 };
                 for (int c = 0; c < sheet.ColumnNames.Length; c++) sheet.ColumnNames[c] = (c + 1) + ": " + data.GetColumnName(c);
@@ -149,7 +150,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             Cancel(pageCancel); pageCancel = null;
             CancelVirtualPage();
             AbandonRawPage();
-            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); }
+            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.GraphSelection?.Dispose(); sheet.GraphSelection = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); }
             if (sizingSheet != null) { SaveColumns(sizingSheet); sizingSheet = null; sizingColumn = -1; GUIUtility.hotControl = 0; }
             pendingLinkedDataset = null; pendingLinkedColumns = null; linkedDataset = null; linkedColumns = Array.Empty<int>(); linkedRow = -1;
             CloseOwnedFigures();

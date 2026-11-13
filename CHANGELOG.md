@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Consolidate scalar binding, labels, axes, style, range and grid controls into one dockable Plot Settings panel following the focused sheet/Figure Window. Keep Figure Windows focused on the graph with compact navigation, point inspection and source-row reveal.
+
 ### Added
+
+- Per-sheet cell grid toggle and conditional 0–1 opacity slider in Active sheet, using the existing table separator palette. Grid appearance saves/reopens with workbook sheet metadata and leaves data/plot caches unchanged.
+
+- Embedded plot point inspection with a source-sample marker and Y-prioritized table navigation/axis-cell boxes; bounded cache reads respect source row spans and linear/log/inverted axes.
+- Source unit presets, explicit custom override, and separate header-label/applied-unit displays. Header suggestions require Apply and do not convert values.
+- Independently collapsible Active sheet and Row Range parameter sections, preserving window state across reloads.
 
 - Saved per-sheet Row Range with inclusive table row numbers, table span reminder/boundaries/dimming, one-row boundary adjustments and reset. Sheet figures inherit source-row exclusion before statistics/summaries/sampling and update in place; detached panels keep docking and camera settings. Range changes support Undo/Redo and preserve raw data/source-row identities.
 

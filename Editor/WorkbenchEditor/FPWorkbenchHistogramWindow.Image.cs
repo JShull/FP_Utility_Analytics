@@ -49,7 +49,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private Texture2D RenderHistogramImage(int width, int height)
         {
             using var canvas = new FPWorkbenchImageCanvas();
-            Rect plot = new Rect(85, 65, width - 115, height - 120);
+            Rect plot = new Rect(85, 65, width - 115 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 120);
             double peak = 0;
             for (int i = 0; i < result.Counts.Count; i++) peak = Math.Max(peak, density ? result.Density(i) : result.Counts[i]);
             if (double.IsNaN(peak) || double.IsInfinity(peak)) throw new OverflowException("Histogram image has nonfinite density.");
@@ -69,13 +69,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float h = (float)((density ? result.Density(i) : result.Counts[i]) / peak * plot.height);
                 canvas.Quad(plot.x + binWidth * i, plot.y, binWidth, h, new Color(.15f, .65f, .9f));
             }
+            pointsOfInterest.Export(canvas, plot, width, height, InterestAxisKey, p => ProjectInterest(p, plot, true), Color.yellow, sourceSheetName);
             return canvas.Render(width, height);
         }
         private void DrawImageExport()
         {
             imageJob?.Draw();
             showImageExport = EditorGUILayout.Foldout(showImageExport, "Image export", true); if (!showImageExport) return;
-            using (new EditorGUILayout.HorizontalScope()) {
+            using (new EditorGUILayout.VerticalScope()) {
                 imageWidth = EditorGUILayout.IntField("PNG width", imageWidth); imageHeight = EditorGUILayout.IntField("Height", imageHeight);
                 using (new EditorGUI.DisabledScope(Busy || result == null || FPWorkbenchImageExport.IsActive)) if (GUILayout.Button("Export PNG…")) {
                     string path = EditorUtility.SaveFilePanel("Export histogram image and provenance", "", "Histogram", "fpfigure");

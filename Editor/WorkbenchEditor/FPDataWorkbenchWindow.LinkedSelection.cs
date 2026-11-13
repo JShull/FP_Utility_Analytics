@@ -21,6 +21,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private bool RequestFigureRow(string dataset, long row, int[] columns)
         {
+            graphSelectionNavigation = false;
             if (row < 0 || columns == null || columns.Length > 4096) return false;
             var source = registeredSources.Find(s => s.DatasetId == dataset);
             if (source == null) return false;
@@ -31,7 +32,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private bool TickLinkedSelection()
         {
-            if (pendingLinkedDataset == null) return false;
+            bool graphChanged = TickGraphNavigation();
+            if (pendingLinkedDataset == null) return graphChanged;
             int index = sheets.FindIndex(s => s.Dataset?.DatasetId == pendingLinkedDataset);
             if (index < 0)
             {
@@ -42,6 +44,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (pendingLinkedRow >= sheet.Dataset.RowCount) { error = "Linked row is outside the verified source."; pendingLinkedDataset = null; pendingLinkedColumns = null; return true; }
             foreach (int column in pendingLinkedColumns)
                 if (column < 0 || column >= sheet.Dataset.ColumnCount) { error = "Linked source column is outside the verified schema."; pendingLinkedDataset = null; pendingLinkedColumns = null; return true; }
+            CancelPlotPick(true);
             linkedDataset = pendingLinkedDataset; linkedRow = pendingLinkedRow; linkedColumns = pendingLinkedColumns;
             pendingLinkedDataset = null; pendingLinkedColumns = null; active = index;
             EnsureTableSchema(sheet);
@@ -74,11 +77,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (!span.Contains(row)) EditorGUI.DrawRect(rect, new Color(.45f, .45f, .45f, .22f));
                 if (row == span.FirstRow || row == span.EndRow - 1) EditorGUI.DrawRect(new Rect(rect.x, row == span.FirstRow ? rect.y : rect.yMax - 2, rect.width, 2), new Color(.4f, .8f, 1, .8f));
             }
-            if (sheet.Dataset.DatasetId == linkedDataset && row == linkedRow) EditorGUI.DrawRect(rect, new Color(.2f, .85f, .95f, .12f));
+            if (!graphSelectionNavigation && !linkedCellsOnly && sheet.Dataset.DatasetId == linkedDataset && row == linkedRow) EditorGUI.DrawRect(rect, new Color(.2f, .85f, .95f, .12f));
         }
         private void DrawLinkedCell(Sheet sheet, long row, int column, Rect rect)
         {
-            if (sheet.Dataset.DatasetId != linkedDataset || row != linkedRow || Array.IndexOf(linkedColumns, column) < 0) return;
+            FPWorkbenchGraphSelection.DrawCell(workbookId, sheet.Dataset.DatasetId, row, column < 0 ? null : sheet.SchemaIds[column], rect);
+            if (graphSelectionNavigation || sheet.Dataset.DatasetId != linkedDataset || row != linkedRow || !(column == -1 && linkedRowHeader) && Array.IndexOf(linkedColumns, column) < 0) return;
             var color = new Color(.2f, .85f, .95f, .7f);
             EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, 2), color); EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - 2, rect.width, 2), color);
             EditorGUI.DrawRect(new Rect(rect.x, rect.y, 2, rect.height), color); EditorGUI.DrawRect(new Rect(rect.xMax - 2, rect.y, 2, rect.height), color);

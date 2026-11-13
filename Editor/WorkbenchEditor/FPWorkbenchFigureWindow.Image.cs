@@ -33,7 +33,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             string output = Path.GetFullPath(directory), parent = Path.GetDirectoryName(Path.GetFullPath(directory));
             if (!output.EndsWith(".fpfigure", StringComparison.OrdinalIgnoreCase) || Directory.Exists(output) || File.Exists(output)) throw new IOException("Choose a new .fpfigure output directory.");
             if (!Directory.Exists(parent)) throw new DirectoryNotFoundException(parent);
-            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, checked(4096L + view.Bins.Length * 12L));
+            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, checked(4096L + FPWorkbenchPlotView.GeometryVertices(view, session.Settings.Style)));
             var sheet = JsonUtility.FromJson<FPWorkbenchSheetDocument>(JsonUtility.ToJson(document));
             sheet.Binding = session.Series.Binding; sheet.Plot = session.Settings;
             var metadata = new ScalarImageProvenance { Width = width, Height = height, Sheet = sheet, DisplayedBins = view.Bins.Length,
@@ -49,7 +49,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private static Texture2D RenderScalarImage(FPWorkbenchSeriesView view, FPWorkbenchPlotSettings settings, string label, int width, int height, out bool aggregated, out int logOmitted)
             => RenderSeriesImage(view, settings, label, width, height, out aggregated, out logOmitted);
         internal static Texture2D RenderSeriesImage(FPWorkbenchSeriesView view, FPWorkbenchPlotSettings settings, string label, int width, int height, out bool aggregated, out int logOmitted,
-            FPWorkbenchOverlayView overlay = null, Color[] colors = null, FPWorkbenchOverlayAxes axes = null, string[] legends = null)
+            FPWorkbenchOverlayView overlay = null, Color[] colors = null, FPWorkbenchOverlayAxes axes = null, string[] legends = null, FPWorkbenchFigurePoints interests = null, string interestKey = "", Color? interestColor = null, string sheetName = "")
         {
             double min = settings.LockY ? settings.MinimumY : view.Minimum, max = settings.LockY ? settings.MaximumY : view.Maximum;
             if ((overlay == null || axes == null) && min == max) FPWorkbenchAxis.ExpandConstant(min, settings.YScale, out min, out max);
@@ -64,6 +64,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var rightMap = dual && rightRange.HasValues ? new FPWorkbenchAxisMapping(rightRange.Minimum, rightRange.Maximum, axes.RightSettings.YScale) : null;
             int legendRows = legends == null ? 0 : (legends.Length + 1) / 2;
             using var canvas = new FPWorkbenchImageCanvas(); Rect plot = new Rect(90, 80 + legendRows * 18, width - (dual ? 185 : 125), height - 145 - legendRows * 18);
+            float interestBand = interests?.BandWidth(width, height, interestKey) ?? 0; plot.width -= interestBand;
             float X(double v) => plot.x + (float)xMap.Fraction(Math.Max(view.StartX, Math.Min(view.EndX, v))) * plot.width;
             float Y(double v) { double f = yMap.Fraction(Math.Max(min, Math.Min(max, v))); return plot.y + (float)(settings.InvertY ? 1 - f : f) * plot.height; }
             Color grid = new Color(.3f, .3f, .3f), color = new Color(0, .7f, 1);
@@ -83,7 +84,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     if (axes.RightSettings.Grid) canvas.Line(plot.x, y, plot.xMax, y, grid);
                     canvas.Text(tick.ToString("G5", CultureInfo.InvariantCulture), plot.xMax + 8, y, TextAnchor.MiddleLeft);
                 }
-                canvas.Text(axes.RightSettings.YLabel, width - 16, plot.center.y, angle: 90);
+                canvas.Text(axes.RightSettings.YLabel, width - interestBand - 16, plot.center.y, angle: 90);
             }
             canvas.Text(string.IsNullOrEmpty(settings.Title) ? label : settings.Title, width / 2f, height - 22);
             canvas.Text(settings.YLabel, 16, plot.center.y, angle: 90);
@@ -103,21 +104,54 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (settings.XScale == FPWorkbenchAxisScale.Log10 && bin.FirstX <= 0 || scale == FPWorkbenchAxisScale.Log10 && bin.Minimum <= 0) { logOmitted++; continuous = false; continue; }
                 float x = (X(bin.FirstX) + X(bin.LastX)) * .5f;
                 bool exact = bin.Count == 1 && bin.InvalidCount == 0;
-                if (!exact) { aggregated = true; canvas.Line(x, SeriesY(bin.Minimum), x, SeriesY(bin.Maximum), color, settings.LineWidth); canvas.Quad(x, SeriesY(bin.Minimum), 1, 1, color); }
-                else { float size = settings.Style == FPWorkbenchPlotStyle.Points ? settings.MarkerSize : 1; canvas.Quad(X(bin.FirstX) - size / 2, SeriesY(bin.FirstY) - size / 2, size, size, color); }
-                if (settings.Style != FPWorkbenchPlotStyle.Points && continuous && bin.Count == 1 && previous.Count == 1 && bin.InvalidCount == 0 && bin.GapCount == 0 && previous.InvalidCount == 0 && previous.EndIndex == bin.FirstIndex && bin.FirstY >= seriesMin && bin.FirstY <= seriesMax && previous.LastY >= seriesMin && previous.LastY <= seriesMax) {
+                if (!exact) {
+                    aggregated = true;
+                    if (bin.RepresentativeCount > 0) {
+                        FPWorkbenchSeriesPoint? prior = null;
+                        for (int j = bin.RepresentativeFirst; j < bin.RepresentativeFirst + bin.RepresentativeCount; j++) {
+                            var point = current.Representatives[j]; if (point.Y < seriesMin || point.Y > seriesMax) { prior = null; continue; }
+                            float marker = settings.MarkerSize;
+                            canvas.Quad(X(point.X) - marker / 2, SeriesY(point.Y) - marker / 2, marker, marker, color);
+                            if (settings.Style != FPWorkbenchPlotStyle.Points && bin.InvalidCount == 0 && bin.GapCount == 0 && prior.HasValue) {
+                                if (settings.Style == FPWorkbenchPlotStyle.Step) {
+                                    canvas.Line(X(prior.Value.X), SeriesY(prior.Value.Y), X(point.X), SeriesY(prior.Value.Y), color, settings.LineWidth);
+                                    canvas.Line(X(point.X), SeriesY(prior.Value.Y), X(point.X), SeriesY(point.Y), color, settings.LineWidth);
+                                } else canvas.Line(X(prior.Value.X), SeriesY(prior.Value.Y), X(point.X), SeriesY(point.Y), color, settings.LineWidth);
+                            }
+                            prior = point;
+                        }
+                    } else if (settings.Style == FPWorkbenchPlotStyle.Points) {
+                        float marker = settings.MarkerSize;
+                        canvas.Quad(x - marker / 2, SeriesY(bin.Minimum) - marker / 2, marker, marker, color);
+                        canvas.Quad(x - marker / 2, SeriesY(bin.Maximum) - marker / 2, marker, marker, color);
+                    } else if (bin.InvalidCount == 0 && bin.GapCount == 0 && bin.FirstY >= seriesMin && bin.FirstY <= seriesMax && bin.LastY >= seriesMin && bin.LastY <= seriesMax) {
+                        if (settings.Style == FPWorkbenchPlotStyle.Step) {
+                            canvas.Line(X(bin.FirstX), SeriesY(bin.FirstY), X(bin.LastX), SeriesY(bin.FirstY), color, settings.LineWidth);
+                            canvas.Line(X(bin.LastX), SeriesY(bin.FirstY), X(bin.LastX), SeriesY(bin.LastY), color, settings.LineWidth);
+                        } else canvas.Line(X(bin.FirstX), SeriesY(bin.FirstY), X(bin.LastX), SeriesY(bin.LastY), color, settings.LineWidth);
+                    }
+                    if (settings.Style != FPWorkbenchPlotStyle.Points) canvas.Line(x, SeriesY(bin.Minimum), x, SeriesY(bin.Maximum), new Color(color.r, color.g, color.b, .3f), settings.LineWidth);
+                }
+                else { float size = settings.MarkerSize; canvas.Quad(X(bin.FirstX) - size / 2, SeriesY(bin.FirstY) - size / 2, size, size, color); }
+                if (settings.Style != FPWorkbenchPlotStyle.Points && continuous && bin.InvalidCount == 0 && bin.GapCount == 0 && previous.InvalidCount == 0 && previous.EndIndex == bin.FirstIndex && bin.FirstY >= seriesMin && bin.FirstY <= seriesMax && previous.LastY >= seriesMin && previous.LastY <= seriesMax) {
                     if (settings.Style == FPWorkbenchPlotStyle.Step) { canvas.Line(X(previous.LastX), SeriesY(previous.LastY), X(bin.FirstX), SeriesY(previous.LastY), color, settings.LineWidth); canvas.Line(X(bin.FirstX), SeriesY(previous.LastY), X(bin.FirstX), SeriesY(bin.FirstY), color, settings.LineWidth); }
                     else canvas.Line(X(previous.LastX), SeriesY(previous.LastY), X(bin.FirstX), SeriesY(bin.FirstY), color, settings.LineWidth);
                 }
                 previous = bin; continuous = bin.GapCount == 0;
             }
             }
-            canvas.Text(logOmitted > 0 ? "Log10: " + logOmitted + " mixed/nonpositive bins omitted" : aggregated ? "Extrema envelopes; zoom for individual samples" : "Individual cached samples", plot.center.x, height - 43);
+            canvas.Text(logOmitted > 0 ? "Log10: " + logOmitted + " mixed/nonpositive bins omitted" : aggregated ? (settings.Style == FPWorkbenchPlotStyle.Points ? "Represented source samples; zoom for all samples" : "Faint ranges: binned min/max; markers: source samples; zoom for all samples") : "Individual cached samples", plot.center.x, height - 43);
             canvas.Text(view.OriginUtcTicks == 0 ? "X: bound numeric/row units" : "Elapsed s from " + new DateTime(view.OriginUtcTicks, DateTimeKind.Utc).ToString("yyyy-MM-dd HH:mm:ss.ffffff 'UTC'", CultureInfo.InvariantCulture), plot.center.x, legendRows * 18 + 17);
             if (legends != null) for (int i = 0; i < legends.Length; i++) {
                 float x = 45 + (i % 2) * (width / 2f), y = 14 + (i / 2) * 18;
                 canvas.Quad(x, y - 3, 10, 6, colors[i]); canvas.Text(legends[i], x + 15, y, TextAnchor.MiddleLeft);
             }
+            if (interests != null) interests.Export(canvas, plot, width, height, interestKey, p => {
+                if (overlay == null || p.Series >= overlay.Series.Count) return null;
+                bool right = axes != null && axes.Right[p.Series]; var mapping = right ? axes.RightSettings : settings;
+                var limits = axes.Resolve(overlay, settings, right);
+                return FPWorkbenchFigurePoints.ProjectXY(p, plot, view.StartX, view.EndX, limits.Minimum, limits.Maximum, settings.XScale, mapping.YScale, mapping.InvertY, true);
+            }, interestColor ?? Color.yellow, sheetName);
             return canvas.Render(width, height);
         }
         private void DrawImageExport(FPWorkbenchFigureSession session)

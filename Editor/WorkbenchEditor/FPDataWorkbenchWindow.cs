@@ -27,6 +27,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             public string RangeAnchorColumn;
             public bool ShowPlot;
             public bool ShowOriginal;
+            public bool CellGrid;
+            public float CellGridOpacity = .35f;
+            [NonSerialized] public FPWorkbenchGraphSelection GraphSelection;
+            [NonSerialized] public FPWorkbenchSeriesPoint? PlotSelectedPoint;
+            [NonSerialized] public FPWorkbenchSeriesCache PlotSelectedSeries;
             [NonSerialized] public FPWorkbenchPresentationUndo PresentationUndo;
             [NonSerialized] public FPWorkbenchColumnProjectionUndo ProjectionUndo;
             [NonSerialized] public int[] ColumnOrder;
@@ -117,6 +122,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void OnDisable()
         {
             if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable);
+            CancelPlotPick(true);
             PreserveWorkingMetadata();
             pendingLinkedDataset = null; pendingLinkedColumns = null;
             CancelSelectionFrame();
@@ -135,7 +141,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             EditorApplication.update -= Tick;
             AbandonRawPage();
             CancelVirtualPage();
-            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); }
+            foreach (var sheet in sheets) { sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.GraphSelection?.Dispose(); sheet.GraphSelection = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); }
         }
         private static void Observe(Task task)
         {
@@ -146,7 +152,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             // Editor update may already have captured its invocation list when this window closes.
             if (!windowActive) return;
-            bool changed = TickDiskCache() | TickClipboard() | TickWorkbook() | TickChanges() | TickSourceOpening() | TickExport() | TickLinkedSelection();
+            bool changed = TickPlotPick() | TickDiskCache() | TickClipboard() | TickWorkbook() | TickChanges() | TickSourceOpening() | TickExport() | TickLinkedSelection();
             double now = EditorApplication.timeSinceStartup;
             Vector2 pixels = position.size;
             if (pixels != lastWindowPixels || sidebar != lastSidebarWidth)
@@ -256,10 +262,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                         Rect divider = GUILayoutUtility.GetRect(10, 6, GUILayout.ExpandWidth(true));
                         if (Event.current.type == EventType.Repaint) plotDividerRect = divider;
                         Resize(divider, false, plotControl);
+                        DrawPlotPickControls(sheet);
                         Rect plot = GUILayoutUtility.GetRect(100, plotHeight, GUILayout.ExpandWidth(true));
                         bool matches = summary != null && sheet.Id == summarySheet && sheet.Series == requestedSeries;
                         FPWorkbenchPlotView.Draw(plot, matches ? summary : null, sheet.Plot,
                             sheet.Series == null ? "" : (sheet.ShowOriginal ? "Original • " : "Effective • ") + sheet.Series.YName);
+                        DrawPlotPointSelection(sheet, plot, matches);
                         DrawColumnDropTargets(sheet, plot);
                         if (matches && (summary.StartX != sheet.Plot.StartX || summary.EndX != sheet.Plot.EndX))
                             GUI.Label(new Rect(plot.x + 80, plot.y + 23, plot.width - 90, 20), "Updating view… (previous range shown)", EditorStyles.miniLabel);
@@ -279,17 +287,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             EditorGUILayout.LabelField(workbookName, EditorStyles.miniLabel);
             var sheet = Current;
             if (sheet == null) return;
-            SidebarSection("Active sheet");
-            sheet.Name = EditorGUILayout.TextField("Sheet name", sheet.Name);
-            if (IsLoading(sheet))
-            {
-                EditorGUILayout.LabelField("Index progress", progress.ToString("P0"));
-                if (GUILayout.Button("Cancel import")) { CancelSheetLoad(sheet); status = "Import cancelled; original source retained."; }
+            FPMeshPreviewEditorUtility.DrawSectionDivider();
+            showSheetDetails = EditorGUILayout.Foldout(showSheetDetails, "Active sheet", true);
+            if (showSheetDetails) {
+                sheet.Name = EditorGUILayout.TextField("Sheet name", sheet.Name);
+                if (IsLoading(sheet)) {
+                    EditorGUILayout.LabelField("Index progress", progress.ToString("P0"));
+                    if (GUILayout.Button("Cancel import")) { CancelSheetLoad(sheet); status = "Import cancelled; original source retained."; }
+                }
+                if (sheet.Dataset != null) { DrawCorrectionControls(sheet); DrawCellGridControls(sheet); DrawPageBudget(); }
             }
             if (sheet.Dataset != null)
             {
-                DrawCorrectionControls(sheet);
-                DrawPageBudget();
                 DrawRowRangeControls(sheet);
                 FPMeshPreviewEditorUtility.DrawSectionDivider();
                 DrawTypedSchemaControls(sheet);
@@ -325,6 +334,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
             if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.None);
         }
+        [SerializeField] private bool showSheetDetails = true, showRowRange = true;
         [SerializeField] private string settingsOwnerId = Guid.NewGuid().ToString("N");
         internal string SettingsOwnerId => settingsOwnerId;
         private static void SidebarSection(string title)
@@ -338,7 +348,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             CancelClipboard();
             var sheet = Current; if (sheet == null) return;
             try { RememberSource(sheet.Dataset, sheet.Name); } catch (Exception ex) { error = ex.Message; return; }
-            sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); ClearPlotUndo(sheet.Id);
+            sheet.ProjectionUndo?.Dispose(); sheet.ProjectionUndo = null; sheet.GraphSelection?.Dispose(); sheet.GraphSelection = null; sheet.PresentationUndo?.Dispose(); sheet.PresentationUndo = null; sheet.FigureLease?.Dispose(); sheet.FigureLease = null; CancelSheetLoad(sheet); ClearPlotUndo(sheet.Id);
             sheets.RemoveAt(active); active = Math.Max(0, active - 1); page = null; summary = null;
         }
         private void DrawTabs()
@@ -441,6 +451,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 ColumnDragHeader(sheet, schemaColumn, new Rect(edge + 3, rect.y, Math.Max(0, visibleWidth - 9), 20));
                 edge += width;
             }
+            DrawCellGrid(sheet, rect, indexWidth, columns);
             if (sheet.Table != null || UsesProjection(sheet)) { DrawVirtualRows(sheet, rect, indexWidth, columns); return; }
             if (page == null || page.DatasetId != sheet.Dataset.DatasetId || page.FirstRow != sheet.FirstRow || page.FirstColumn != sheet.FirstColumn)
             { GUI.Label(new Rect(rect.x + 5, rect.y + 24, rect.width, 20), "Loading page…"); return; }
@@ -451,6 +462,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float y = rect.y + (r + 1) * 20;
                 DrawLinkedRow(sheet, page.FirstRow + r, new Rect(rect.x, y, rect.width, 20));
                 if (indexWidth > 0) GUI.Label(new Rect(rect.x + 3, y, indexWidth - 6, 20), (page.FirstRow + r + 1).ToString(CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+                if (indexWidth > 0) DrawLinkedCell(sheet, page.FirstRow + r, -1, new Rect(rect.x + 1, y, indexWidth - 2, 20));
                 edge = rect.x + indexWidth;
                 for (int c = 0; c < columns; c++)
                 {

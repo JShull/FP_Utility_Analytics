@@ -37,7 +37,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private CancellationTokenSource cancellation;
         private string error;
         private GUIContent equationLabel;
-        [SerializeField] private string sourceSheetId = "";
+        [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
+        [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
+        private bool pinnedReferencesReady;
         [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
         private bool Busy => opening != null || pendingOpening || fitting != null || building != null || pendingFit || pendingBuild;
         public static FPWorkbenchHistogramWindow Open(FPWorkbenchCsvDataset source, int sourceColumn, FPWorkbenchChangeSnapshot changes = null, string workbookId = null, FPWorkbenchFormulaProgram calculationProgram = null, string derivedColumnId = null, FPWorkbenchRowRange rows = null, string sheetId = "")
@@ -49,7 +52,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var window = CreateInstance<FPWorkbenchHistogramWindow>(); window.cache = source.CacheDirectory; window.datasetId = source.DatasetId;
             window.column = selected; window.columnName = derived ? calculationProgram.Name(selected) : source.GetColumnName(selected); window.endRow = source.RowCount;
             window.derivedId = derivedColumnId; window.calculations = calculationProgram == null ? null : JsonUtility.ToJson(calculationProgram.Definition);
-            window.workbook = workbookId; window.sourceSheetId = sheetId; window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange();
+            window.workbook = workbookId; window.sourceSheetId = sheetId; window.sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(window.WorkbookId, sheetId, ""); window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange();
             window.firstRow = window.rowRange.First(source.RowCount); window.endRow = window.rowRange.End(source.RowCount);
             window.corrections = changes?.Json; window.Attach(source); window.BeginFit();
             FPDataWorkbenchWindow.RememberFigure(workbookId, window.DescribeFigure());
@@ -57,7 +60,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         internal void ApplySheetRows(FPWorkbenchFigureDocument figure)
         {
-            rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId;
+            rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId; sourceSheetName = figure.SourceSheetName;
             if (dataset != null) { cancellation.Cancel(); ReleaseHistogramOperation(); }
             resultMemory?.Dispose(); resultMemory = null; result = null; publishedSettings = null; DisposeHistogramUndo();
             firstRow = figure.FirstRow; endRow = figure.EndRow; fitOnOpen = true; error = null;
@@ -66,13 +69,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void OnEnable()
         {
             windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
-            minSize = new Vector2(560, 360); wantsMouseMove = true; cancellation = new CancellationTokenSource(); EditorApplication.update += Tick;
+            minSize = new Vector2(920, 520); wantsMouseMove = true; cancellation = new CancellationTokenSource(); EditorApplication.update += Tick;
             try { RestorePublishedQuery(); } catch (Exception ex) { error = ex.Message; return; }
             pendingOpening = !string.IsNullOrEmpty(cache);
         }
         private void OnDisable()
         {
             if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); diskLease?.Dispose(); diskLease = null;
+            pointsOfInterest.Dispose();
             imageJob?.Dispose(); imageJob = null;
             DisposeHistogramUndo();
             try { if (!string.IsNullOrEmpty(datasetId)) FPDataWorkbenchWindow.RememberFigure(workbook, DescribeFigure()); }
@@ -85,10 +89,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         internal FPWorkbenchFigureDocument DescribeFigure()
         {
+            sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
             var shown = PublishedHistogramSettings() ?? CaptureHistogramSettings();
             return new FPWorkbenchFigureDocument
         {
-            Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram, SourceSheetId = sourceSheetId, Rows = rowRange.Copy(),
+            Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram, SourceSheetId = sourceSheetId, SourceSheetName = sourceSheetName, PointsOfInterest = pointsOfInterest.Snapshot(), Rows = rowRange.Copy(),
             HistogramColumn = string.IsNullOrEmpty(derivedId) ? column : 0, HistogramDerivedId = derivedId, HistogramBins = shown.Bins, FirstRow = shown.FirstRow, EndRow = shown.EndRow, Minimum = shown.Minimum, Maximum = shown.Maximum,
             Density = density, Grid = grid, FitHistogramOnOpen = shown.FitOnOpen, InvalidPolicy = shown.InvalidPolicy,
             HasCorrectionSnapshot = !string.IsNullOrEmpty(corrections),
@@ -101,7 +106,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             saved.Validate(); var window = CreateInstance<FPWorkbenchHistogramWindow>();
             window.workbook = workbookId; window.figureId = saved.Id; window.cache = source.CacheDirectory; window.datasetId = saved.DatasetId;
-            window.rowRange = saved.Rows.Copy(); window.sourceSheetId = saved.SourceSheetId;
+            window.rowRange = saved.Rows.Copy(); window.sourceSheetId = saved.SourceSheetId; window.sourceSheetName = saved.SourceSheetName; window.pointsOfInterest.Restore(saved.PointsOfInterest);
             window.column = saved.HistogramColumn; window.bins = saved.HistogramBins; window.derivedId = saved.HistogramDerivedId;
             window.calculations = saved.HasCalculationSnapshot ? JsonUtility.ToJson(saved.CalculationSnapshot) : null;
             window.firstRow = saved.FirstRow; window.endRow = saved.EndRow; window.minimum = saved.Minimum; window.maximum = saved.Maximum;
@@ -213,26 +218,39 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnGUI()
         {
+            sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
+            GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
             if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
+            using (new EditorGUILayout.HorizontalScope()) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                    figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
+                    try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
+                }
+                using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
+            }
+        }
+        private void DrawFigureSettings()
+        {
+
             string beforeSettings = HistogramSettingsJson();
             GUILayout.Label(columnName + (string.IsNullOrEmpty(derivedId) ? "" : " • Calculated") + (string.IsNullOrEmpty(corrections) ? " • Original snapshot" : " • Effective snapshot"), EditorStyles.boldLabel);
             if (equationLabel != null) GUILayout.Label(equationLabel, EditorStyles.miniLabel);
             using (new EditorGUI.DisabledScope(Busy || dataset == null))
             {
                 using (new EditorGUI.DisabledScope(!string.IsNullOrEmpty(sourceSheetId)))
-                using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUILayout.VerticalScope())
                 { firstRow = EditorGUILayout.LongField("First row (0-based)", firstRow); endRow = EditorGUILayout.LongField("End row (exclusive)", endRow); }
-                using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUILayout.VerticalScope())
                 { minimum = EditorGUILayout.DoubleField("Minimum", minimum); maximum = EditorGUILayout.DoubleField("Maximum", maximum); }
-                using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUILayout.VerticalScope())
                 {
                     bins = EditorGUILayout.IntField("Bins (1–4096)", bins);
                     invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup("Invalid values", invalidPolicy);
                 }
-                using (new EditorGUILayout.HorizontalScope())
+                using (new EditorGUILayout.VerticalScope())
                 { if (GUILayout.Button("Fit limits / build")) BeginFit(); if (GUILayout.Button("Apply / build")) BeginBuild(); }
             }
-            using (new EditorGUILayout.HorizontalScope())
+            using (new EditorGUILayout.VerticalScope())
             {
                 density = GUILayout.Toggle(density, "Density", EditorStyles.toolbarButton); grid = GUILayout.Toggle(grid, "Grid", EditorStyles.toolbarButton);
                 if (Busy) { GUILayout.Label(waitingForMemory ? "Waiting for shared memory / scan capacity…" : "Reading source in background…", EditorStyles.miniLabel); if (GUILayout.Button("Cancel")) CancelHistogram(); }
@@ -242,11 +260,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             FPWorkbenchPlotPresetGUI.DrawFileActions(() => new FPWorkbenchHistogramPreset { Density = density, Grid = grid }.ToJson(),
                 ApplyPresentationPreset, "histogram preset", "fphistplot", FPWorkbenchHistogramPreset.MaximumBytes);
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Warning);
+        }
+        private void DrawFigureGraph()
+        {
             if (result == null) { EditorGUILayout.HelpBox("Build a histogram to display counts. Source files remain unchanged.", MessageType.Info); return; }
             GUILayout.Label($"Displayed rows [{result.FirstRow:N0}, {result.EndRow:N0}) • {result.Counts.Count} bins • included {result.IncludedCount:N0} • invalid {result.InvalidCount:N0} • below {result.UnderflowCount:N0} • above {result.OverflowCount:N0}", EditorStyles.miniLabel);
             Rect area = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
             try { DrawBars(area); } catch (OverflowException ex) { GUI.Label(area, ex.Message); }
-        }
+                }
         private void DrawBars(Rect area)
         {
             EditorGUI.DrawRect(area, new Color(.1f, .1f, .1f));
@@ -268,10 +289,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             }
             GUI.Label(new Rect(plot.x, plot.yMax + 4, plot.width / 2, 20), result.Edges[0].ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
             GUI.Label(new Rect(plot.xMax - 100, plot.yMax + 4, 100, 20), result.Edges[result.Edges.Count - 1].ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+            pointsOfInterest.DrawMarkers(InterestAxisKey, p => ProjectInterest(p, plot, false), Color.yellow);
             if (plot.Contains(Event.current.mousePosition))
             {
                 int bin = Mathf.Clamp((int)((Event.current.mousePosition.x - plot.x) / width), 0, result.Counts.Count - 1);
                 GUI.Label(new Rect(plot.x + 4, area.y, plot.width - 8, 20), $"Bin {bin + 1}: [{result.Edges[bin]:G6}, {result.Edges[bin + 1]:G6}{(bin == result.Counts.Count - 1 ? "]" : ")")} • {result.Counts[bin]:N0} samples", EditorStyles.miniLabel);
+                if (Event.current.type == EventType.MouseDown && Event.current.button == 0) {
+                    selectedInterest = new FPWorkbenchFigurePoint { X = (result.Edges[bin] + result.Edges[bin + 1]) * .5, Y = density ? result.Density(bin) : result.Counts[bin], AxisKey = InterestAxisKey,
+                        Details = "Bin " + (bin + 1) + ": [" + result.Edges[bin].ToString("G9", CultureInfo.InvariantCulture) + ", " + result.Edges[bin + 1].ToString("G9", CultureInfo.InvariantCulture) + (bin == result.Counts.Count - 1 ? "]" : ")") + "; " + result.Counts[bin].ToString("N0") + " samples (aggregate)" }; Event.current.Use(); Repaint();
+                }
                 if (Event.current.type == EventType.MouseMove) Repaint();
             }
         }

@@ -22,7 +22,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     }
 
     /// <summary>Up to eight independent Y series sharing one verified dataset and X binding.</summary>
-    public sealed class FPWorkbenchOverlay
+    public sealed partial class FPWorkbenchOverlay
     {
         private readonly FPWorkbenchSeriesCache[] series;
         private readonly int[] columns;

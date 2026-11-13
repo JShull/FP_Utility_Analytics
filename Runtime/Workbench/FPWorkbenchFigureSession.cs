@@ -127,7 +127,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
                 if (query.Status == TaskStatus.RanToCompletion && queryGeneration == generation && Settings.StartX == requestedStart && Settings.EndX == requestedEnd)
                 {
                     ClearView(); View = query.Result; viewMemory = queryMemory; queryMemory = null;
-                    viewMemory?.Complete(checked(4096L + View.Bins.Length * 128L)); Error = null; Revision++;
+                    viewMemory?.Complete(checked(4096L + View.Bins.Length * 128L + View.Representatives.Length * 40L)); Error = null; Revision++;
                     if (!Settings.LockY && !double.IsNaN(View.Minimum)) { Settings.MinimumY = View.Minimum; Settings.MaximumY = View.Maximum; }
                 }
                 else if (query.IsFaulted)

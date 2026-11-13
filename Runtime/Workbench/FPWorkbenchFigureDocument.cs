@@ -38,7 +38,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public int Version = 1;
         public string Id = Guid.NewGuid().ToString("N"), Name = "Figure", DatasetId;
         public FPWorkbenchFigureKind Kind;
-        public string SourceSheetId = "";
+        public string SourceSheetId = "", SourceSheetName = "";
+        public System.Collections.Generic.List<FPWorkbenchFigurePoint> PointsOfInterest = new System.Collections.Generic.List<FPWorkbenchFigurePoint>();
         public FPWorkbenchRowRange Rows = new FPWorkbenchRowRange();
         public bool HasCorrectionSnapshot;
         public FPWorkbenchChangeSet CorrectionSnapshot;
@@ -63,6 +64,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public void Validate()
         {
             Rows ??= new FPWorkbenchRowRange(); Rows.Validate();
+            PointsOfInterest ??= new System.Collections.Generic.List<FPWorkbenchFigurePoint>(); FPWorkbenchFigurePoint.Validate(PointsOfInterest);
+            if (SourceSheetName != null && SourceSheetName.Length > 512) throw new InvalidDataException("Invalid figure sheet name.");
             if (SourceSheetId != null && SourceSheetId.Length > 128) throw new InvalidDataException("Invalid figure source sheet.");
             if (Version != 1 || string.IsNullOrEmpty(Id) || Id.Length > 128 || string.IsNullOrEmpty(Name) || Name.Length > 512 ||
                 string.IsNullOrEmpty(DatasetId) || DatasetId.Length > 256 || !Enum.IsDefined(typeof(FPWorkbenchFigureKind), Kind))
@@ -111,7 +114,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             }
             else if (Kind == FPWorkbenchFigureKind.Scatter || Kind == FPWorkbenchFigureKind.AlignedScatter)
             {
-                if (Binding == null || Binding.XMode != FPWorkbenchXMode.Numeric || Plot == null || PointBudget < 1 || PointBudget > 65536 ||
+                if (Binding == null || Kind == FPWorkbenchFigureKind.AlignedScatter && Binding.XMode != FPWorkbenchXMode.Numeric || Plot == null || PointBudget < 1 || PointBudget > 65536 ||
                     Colors == null || Colors.Length != 1 || !Enum.IsDefined(typeof(FPWorkbenchInvalidPolicy), InvalidPolicy)) throw new InvalidDataException("Invalid scatter binding, budget, color or policy.");
                 Binding.Copy(int.MaxValue); FPWorkbenchDocument.ValidatePlot(Plot);
                 if (Kind == FPWorkbenchFigureKind.AlignedScatter)

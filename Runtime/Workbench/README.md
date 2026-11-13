@@ -7,10 +7,16 @@ A reusable Unity tabular viewer and plotter for large CSV recordings. Workbooks 
 1. Open **FuzzPhyte > Utility > Analytics > Data Workbench**.
 2. Click **Workbook Settings…** at the top of the parameter sidebar. This dockable panel contains workbook open/save/recovery, saved figures/registered sources, shared cache settings, correction-file import/export and CSV import. Choose the source encoding, browse to a CSV, then **Add sheet**. A bounded read-only prefix can appear before full indexing; it is explicitly unverified. Editing and plots wait for source verification.
 3. Navigate the streamed table using row/column controls and its vertical scrollbar. Resize column edges, reset widths to Auto, or organize hidden/frozen columns. Workbook metadata preserves layouts. Small `C1`, `C2`, etc. header labels identify formula source references; calculated definitions show `D1`, `D2`, etc. Labels follow source/definition order and remain correct when columns are hidden, frozen or reordered.
-   Drag the divider above the embedded graph to adjust its height. Parameter sections are separated by headings/dividers; series binding, other plot windows, labels/axes, range, style, grid/limits and framing are grouped separately.
-4. Choose numeric columns and the X binding, then **Apply binding / build plot**. Column drag targets and dedicated figure windows support plot setup. Use explicit UTC formats for date/time pairs.
+   Drag the divider above the embedded graph to adjust its height. Active sheet and Row Range can be collapsed independently, with window state preserved across reloads. In Active sheet, **Cell grid** shows table lines; when enabled, **Grid opacity** adjusts their opacity from 0 to 1 (default 0.35). These settings are independent per sheet and persist with Save workbook. Sheet parameter sections remain in the sidebar; graph settings live in the separate Plot Settings panel.
+4. Open **Plot Settings…** near the top of the sidebar. Choose numeric columns and the X binding, then **Apply binding / build plot**. Column drag targets and dedicated figure windows support plot setup. Use explicit UTC formats for date/time pairs.
 5. In Workbook Settings, use **Save workbook** / **Open workbook** for tables, source references, corrections, calculations, figures and layout. Original recordings are never rewritten.
 6. In Workbook Settings, expand **Disk cache** to inspect usage, trim unused entries or change the dedicated root/quota. Close tables and figures and finish workers before applying a new root/quota. Settings are local JSON outside Assets. The settings panel can be closed or docked like a normal Unity Editor tab; closing it leaves its owning workbook and workers open. Each Workbench window has its own associated settings panel.
+
+## Plot Settings and Figure Window
+
+**Plot Settings…** opens one dockable, movable, closable Unity panel. It follows the focused Workbench sheet or scalar Figure Window, shows its target name, and stays on that target while you edit. Independent collapsible sections contain series binding, presentation presets/labels/axis scales, view range/inversion, line/step/point style, grid/Y limits, and framing. Binding changes use **Apply binding / build plot**; presentation changes appear immediately in both the embedded graph and its detached Figure Window. Existing Undo and workbook persistence remain in place. Closing the settings panel leaves the workbook and figures running; it owns no data-session lease.
+
+The **Figure Window** keeps the graph prominent with a compact Fit X / Plot Settings / Export toolbar, mouse-wheel zoom and middle-drag pan. Click a represented sample for a yellow selection ring and row/Y readout. **Show row** navigates its open source sheet with the Y column in view and axis cells boxed; **Clear point** removes the selection. A changed view discards stale inspection state. Detached figures remain editable after the source sheet closes; Show row requires that sheet to be open. Export PNG opens the target figure's image-export controls in Plot Settings.
 
 ## Sheet Row Range
 
@@ -19,6 +25,12 @@ After the correction controls/resource readout, **Row Range** accepts **First ro
 Scalar, detached scalar, histogram, same-source overlay, scatter and 3D figures opened from a sheet inherit its span. Applying a new span updates open figure panels in place, preserving docking and presentation/camera settings. Exclusion happens before statistics, extrema summaries and point sampling; source-row identities and raw data stay unchanged. UTC plots label elapsed time from the first included UTC timestamp. Range changes support plot-binding Undo/Redo.
 
 Sheet spans and figure links/snapshots save with the workbook and image provenance. Existing unlinked figures for the same source adopt the sheet when its range is first applied. A figure whose source sheet has been closed retains its saved span; workbook-level aligned comparisons retain their explicit alignment-recipe scope. Materialized CSV export retains its own explicit export range.
+
+## Point inspection and source units
+
+Click a represented sample in the embedded plot to mark it and navigate the table to its original row, bringing the Y column into view. Only the associated axis cells are boxed; UTC X includes its date/time columns, while row-domain X uses the row-number cell. X cells are boxed when visible. **Clear point** removes this transient selection. Overview envelopes resolve to actual represented extrema/endpoints; zoom to inspect individual samples. Picking reads the cache in a bounded background job and respects row spans, axis scales and inversion.
+
+**Source units** offers built-in presets and a **Custom override** checkbox for symbolic unit text. **Header unit (label only)** and **Applied units** distinguish CSV labels such as `[°C]` from declarations. Recognized headers can suggest a preset, but **Apply declaration** is required; no values are converted or calibrated. Temperature presets use `degC`/`degF` symbols. A unit is separate from the column's numeric/text type.
 
 ## Current capabilities
 
@@ -53,3 +65,5 @@ Normal Editor imports, workbook opening, registered-source opening and detached-
 Verified in Unity 6000.6.7f1: clean compilation and **170/170 Workbench Edit Mode tests passed**. The real 487,006-row CSV workbook recovered after deliberate isolated-cache eviction; all five plots regenerated from saved recipes. A subsequent trim reclaimed every generated artifact while preserving the source, workbooks and exports. The normal cache configuration is restored and the gallery workbook is open in Unity. See [delivery results](../../Documentation~/WorkbenchDeliveryResults.md) for artifact locations, timings, memory observations and limits.
 
 Earlier detailed API notes and chronological progress logs are preserved in [the archived reference](../../Documentation~/Archive/DataWorkbenchReference.history-2026-11-12.md) and [archived plan](../../Documentation~/Archive/DataWorkbenchPlan.history-2026-11-12.md). They are historical context, not additional current requirements.
+
+Plot styles also apply to cached overviews: Points draws min/max summary markers at bin centers using Point size; Line and Step retain extrema envelopes and add the corresponding first/last endpoint trace for clean bins. These traces summarize the bin, not every sample. Zoom in for individual samples. Embedded plots, Figure Windows and PNG exports use these conventions.

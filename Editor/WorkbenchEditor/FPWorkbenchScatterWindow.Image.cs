@@ -19,7 +19,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             public string Format = "FuzzPhyte.DataWorkbench.ScatterImage", SourcePath, ViewDatasetId;
             public int Version = 1, RenderedPoints;
-            public long MatchingPoints, InvalidSourceRows;
+            public long MatchingPoints, InvalidSourceRows, OriginUtcTicks;
             public bool Sampled;
             public long[] DisplayedRows;
             public FPWorkbenchFigureDocument Figure;
@@ -37,7 +37,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (!Directory.Exists(parent)) throw new DirectoryNotFoundException(parent);
             using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, checked(4096L + view.Points.Count * 4L));
             var figure = DescribeFigure(); figure.PointBudget = completedBudget; figure.Validate();
-            var metadata = new ScatterImageProvenance { Width = width, Height = height, Figure = figure, SourcePath = dataset.SourcePath,
+            var metadata = new ScatterImageProvenance { Width = width, Height = height, Figure = figure, OriginUtcTicks = cache.OriginUtcTicks, SourcePath = dataset.SourcePath,
                 ViewDatasetId = view.DatasetId, MatchingPoints = view.MatchingCount, InvalidSourceRows = cache.InvalidCount, RenderedPoints = view.Points.Count,
                 Sampled = view.Decimated, DisplayedRows = new long[view.Points.Count], Alignment = hasAlignedOrigin ? alignedOrigin : null,
                 AlignmentSources = hasAlignedRecipe ? new[] { alignedLeftReference, alignedRightReference } : null };
@@ -54,7 +54,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var bounds = view.Bounds;
             var xMap = new FPWorkbenchAxisMapping(bounds.MinimumX, bounds.MaximumX, settings.XScale);
             var yMap = new FPWorkbenchAxisMapping(bounds.MinimumY, bounds.MaximumY, settings.YScale);
-            using var canvas = new FPWorkbenchImageCanvas(); var plot = new Rect(90, 80, width - 125, height - 145);
+            using var canvas = new FPWorkbenchImageCanvas(); var plot = new Rect(90, 80, width - 125 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 145);
             float X(double value) => plot.x + (float)xMap.Fraction(value) * plot.width;
             float Y(double value) { double f = yMap.Fraction(value); return plot.y + (float)(settings.InvertY ? 1 - f : f) * plot.height; }
             canvas.Line(plot.x, plot.y, plot.xMax, plot.y, Color.gray); canvas.Line(plot.x, plot.y, plot.x, plot.yMax, Color.gray);
@@ -66,8 +66,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float y = Y(tick); if (settings.Grid) canvas.Line(plot.x, y, plot.xMax, y, new Color(.3f, .3f, .3f));
                 canvas.Text(tick.ToString("G5", CultureInfo.InvariantCulture), plot.x - 8, y, TextAnchor.MiddleRight);
             }
-            canvas.Text(string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + names[appliedX] : settings.Title, width / 2f, height - 22);
-            canvas.Text(string.IsNullOrEmpty(settings.XLabel) ? names[appliedX] : settings.XLabel, plot.center.x, 38);
+            canvas.Text(string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + XCoordinateName : settings.Title, width / 2f, height - 22);
+            canvas.Text(string.IsNullOrEmpty(settings.XLabel) ? XCoordinateName : settings.XLabel, plot.center.x, 38);
             canvas.Text(string.IsNullOrEmpty(settings.YLabel) ? names[appliedY] : settings.YLabel, 16, plot.center.y, angle: 90);
             canvas.Text(view.Points.Count + " / " + view.MatchingCount + (view.Decimated ? " matching points (sampled)" : " matching points"), plot.center.x, height - 43);
             foreach (var point in view.Points) {
@@ -76,14 +76,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float left = Math.Max(plot.x, x - size / 2), bottom = Math.Max(plot.y, y - size / 2);
                 canvas.Quad(left, bottom, Math.Min(plot.xMax, x + size / 2) - left, Math.Min(plot.yMax, y + size / 2) - bottom, pointColor);
             }
-            canvas.Text(hasAlignedRecipe ? "Aligned snapshot; both original source references in provenance" : "Source-row identities retained in provenance", plot.center.x, 17);
+            canvas.Text(hasAlignedRecipe ? "Aligned snapshot; both original source references in provenance" : UtcCaption, plot.center.x, 17);
+            pointsOfInterest.Export(canvas, plot, width, height, InterestAxisKey, p => ProjectInterest(p, plot, true), graphSelection.Color, sourceSheetName);
             return canvas.Render(width, height);
         }
         private void DrawImageExport()
         {
             imageJob?.Draw();
             showImageExport = EditorGUILayout.Foldout(showImageExport, "Image export", true); if (!showImageExport) return;
-            using (new EditorGUILayout.HorizontalScope()) {
+            using (new EditorGUILayout.VerticalScope()) {
                 imageWidth = EditorGUILayout.IntField("PNG width", imageWidth); imageHeight = EditorGUILayout.IntField("Height", imageHeight);
                 using (new EditorGUI.DisabledScope(Busy || view == null || FPWorkbenchImageExport.IsActive)) if (GUILayout.Button("Export PNG…")) {
                     string path = EditorUtility.SaveFilePanel("Export scatter image and provenance", "", "Scatter", "fpfigure");

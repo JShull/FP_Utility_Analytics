@@ -10,6 +10,20 @@ Final connected verification: clean Unity compilation and **63 passed / 0 failed
 
 Real recording acceptance used inclusive table rows **400001–401000**: **1,000** scoped scalar records, source start index **400000**, elapsed X **0–2.4975 s** from UTC ticks **638727123920000000**, and **1,000 valid / 0 invalid** 3D source rows. Table exclusions and the start boundary were inspected in the Editor. The previous full-row setting (**487,006 rows**), table position and original X viewport (**777.58698852547–1272.5906313803964**) were restored. The source SHA-256 remains `0fdd196c7386457c1184198504fea7287c925416aa658ba4a494cfb4e670dc44`; no workbook or existing gallery export was overwritten. Temporary detailed evidence is in `%LOCALAPPDATA%/Temp/workbench-rowrange-final-tests-20261112.json`, `workbench-real-row-range-observation.json` and `workbench-real-row-range-restored.json`. Unity generated the new source/test metadata; no packages or Unity-generated files were manually authored. `git diff --check` passed.
 
+## Point inspection, unit presets and top-panel foldouts
+
+Embedded plot clicks select actual cached source extrema/endpoints, mark the sample and navigate to its original source row. Table navigation prioritizes Y, retaining the normal column layout; only graph-axis cells are boxed (including UTC date/time when visible), and row-domain X can box the intrinsic row-number cell. Clear point removes the transient link. Work uses bounded background admission/cache leases and discards responses if the active sheet, series, view or axis settings change. Linear/log/inverted mappings, large X origins, equal-X ties, envelopes, misses, cancellation, exact source identity, UTC axis-cell linkage and Y navigation have focused regression coverage.
+
+Source units now provide preset symbols, optional custom text behind Custom override, header-label hints and a separate Applied units readout. Celsius in a CSV column header is not a numeric type or an automatic declaration; the real recording's temperature column remains unspecified until Apply. Header suggestions do not mutate measurements or metadata, every preset parses in the existing unit engine, and custom symbolic units remain supported. Active sheet and Row Range are independently collapsible with serialized window state; lower graph parameter sections were left unchanged after the user's hold request.
+
+Following the Editor crash/restart, JohnTest was opened directly through the existing workbook handler to bypass the automated-mode file dialog. All three sheets admitted successfully, preserving the saved inclusive range **310000–487006**. Both collapsed regions were visually inspected in the live Editor. Compilation is clean; **15 focused tests passed** (2 cache-picking, 1 connected plot/table-picking, 3 source-unit/typed-declaration, 9 Workbench window tests), with no failed/skipped/inconclusive tests in those completed runs. New picking tests use frame-driven UnityTest wrappers to keep asynchronous verification responsive. The earlier interrupted run is not counted as passing evidence. No lower graph UI redesign, data conversion, new dependency or manual Unity-generated metadata was introduced.
+
+## Table cell grid
+
+Active sheet includes Cell grid and a conditional Grid opacity slider (0–1, default 0.35). Thin, DPI-aware lines use the existing table/header separator RGB palette and draw only during repaint; raw and calculated/projected tables share the same grid path. Settings belong to individual sheet views and round-trip in workbook metadata; old workbooks default to grid off and invalid opacity values are rejected. Cell-grid drawing does not touch source values, row filtering or plot/cache requests.
+
+Connected verification: clean compilation and **10/10 focused tests passed** (new per-sheet grid save/open, legacy defaults and opacity-validation integration fixture plus nine Workbench window regressions). Two views sharing one source retain independent grid settings, and loading leaves saved workbook bytes unchanged. Lower graph parameter sections were not changed.
+
 ## Completed delivery verification
 
 - Unity 6000.6.7f1, project `C:\GItHub\FPLibraries\FPLibraries`; connected Editor Pipeline 0.10.0-exp.1 and CLI 1.0.0-beta.17.
@@ -66,3 +80,13 @@ Connected compilation passed with no errors/warnings. The 3D fixture passed **2/
 ## Axis values follow-up — 2026-11-12
 
 Added the Axis values display toggle, saved in 3D figure settings. Visible bounds-frame axes show up to five source-coordinate ticks with declared units at the high end; projected label overlap is suppressed. Annotated PNG exports respect the same toggle. Connected compilation is clean and the 3D fixture passed 2/2 tests, including distinct labels across a narrow range at source offset 1e12, normalized tick placement, hidden-value metadata restoration and export with numeric labels enabled. No data rebuild or dependency change is involved; git diff --check passed.
+
+### Overview plot styles
+
+Fixed style-independent aggregated overview rendering in live scalar/overlay plots and PNG export. Points uses sized summary-extrema markers; Line/Step add clean-bin endpoint traces alongside extrema envelopes. Labels disclose summary geometry. Unity compilation reported no errors/warnings; all 3 FPWorkbenchFigureTests passed, including distinct aggregated style geometry, marker size, log/gap handling and shared session/export checks.
+
+### Dockable scalar Plot Settings
+
+Consolidated sheet/scalar-figure binding, presets, labels/axis scales, range/inversion, style and grid/Y limits into one dockable Plot Settings panel. It follows the focused sheet or scalar Figure Window, displays its target and owns no session/worker lease. Active sheet controls stay in the Workbench sidebar. Figure Windows now emphasize the graph, with compact Fit X/settings/export actions and click inspection (ring, row/Y, clear and Y-prioritized source-row reveal). Image-export controls are reached through the same panel. Detached figures remain editable after a sheet closes.
+
+Unity 6000.6.7f1: final compilation/console ground truth reports no compilation failure or current errors/warnings. All **33 focused tests passed**: PlotSettingsWindow 2 (shared identity, Undo, actual workbook save/load, serialized target restore, lease/close lifetime, standalone rebinding/Undo and native-window point click), Figure 3, Window 9, Document 18, and PlotPickingWindow 1. Inspected the new panel and compact Figure Window on JohnTest's depth sheet; confirmed exactly one panel, docked it using Unity's supported window API, verified dock state after layout, and returned it to a floating window. Original workbook metadata was not saved over during this UI verification. The original DataWorkbenchPlan.md was not extended.

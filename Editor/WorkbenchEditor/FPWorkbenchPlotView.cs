@@ -19,15 +19,46 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             settings.XLabel = EditorGUILayout.TextField("X label", settings.XLabel);
             settings.YLabel = EditorGUILayout.TextField("Y label", settings.YLabel);
         }
-        public static void StyleControls(FPWorkbenchPlotSettings settings, bool compact = false)
+        public static void StyleControls(FPWorkbenchPlotSettings settings, bool compact = false, string styleLabel = "Plot style")
         {
             if (compact) settings.Style = (FPWorkbenchPlotStyle)EditorGUILayout.EnumPopup(settings.Style, GUILayout.Width(75));
             else
             {
-                settings.Style = (FPWorkbenchPlotStyle)EditorGUILayout.EnumPopup("Plot style", settings.Style);
-                settings.LineWidth = EditorGUILayout.Slider("Line width", settings.LineWidth, 1, 8);
+                settings.Style = (FPWorkbenchPlotStyle)EditorGUILayout.EnumPopup(styleLabel, settings.Style);
+                using (new EditorGUI.DisabledScope(settings.Style == FPWorkbenchPlotStyle.Points))
+                    settings.LineWidth = EditorGUILayout.Slider("Line width", settings.LineWidth, 1, 8);
                 settings.MarkerSize = EditorGUILayout.Slider("Point size", settings.MarkerSize, 1, 16);
             }
+        }
+        internal static bool ContainsPoint(Rect rect, Vector2 point) => point.x >= rect.x && point.x <= rect.xMax && point.y >= rect.y && point.y <= rect.yMax;
+        internal static long GeometryVertices(FPWorkbenchSeriesView view, FPWorkbenchPlotStyle style)
+        {
+            long count = 0; foreach (var bin in view.Bins) count += bin.Count == 1 && bin.InvalidCount == 0 ? (style == FPWorkbenchPlotStyle.Points ? 4 : style == FPWorkbenchPlotStyle.Step ? 12 : 8) : (style == FPWorkbenchPlotStyle.Points ? 16 : style == FPWorkbenchPlotStyle.Step ? 52 : 36);
+            return count;
+        }
+        internal static Rect PlotRect(Rect rect, FPWorkbenchPlotSettings settings, bool dual = false)
+        {
+            float left = string.IsNullOrEmpty(settings.YLabel) ? 75 : 95;
+            float bottom = string.IsNullOrEmpty(settings.XLabel) ? 50 : 70;
+            return new Rect(rect.x + left, rect.y + 25, Math.Max(1, rect.width - left - (dual ? 95 : 15)), Math.Max(1, rect.height - 25 - bottom));
+        }
+        internal static bool TryScalarAxes(Rect rect, FPWorkbenchSeriesView view, FPWorkbenchPlotSettings settings,
+            out Rect area, out FPWorkbenchAxisMapping x, out FPWorkbenchAxisMapping y)
+        {
+            area = PlotRect(rect, settings); x = y = null;
+            if (view == null || double.IsNaN(view.Minimum)) return false;
+            try {
+                double min = settings.LockY ? settings.MinimumY : view.Minimum, max = settings.LockY ? settings.MaximumY : view.Maximum;
+                if (min == max) FPWorkbenchAxis.ExpandConstant(min, settings.YScale, out min, out max);
+                x = new FPWorkbenchAxisMapping(view.StartX, view.EndX, settings.XScale); y = new FPWorkbenchAxisMapping(min, max, settings.YScale); return true;
+            } catch (ArgumentException) { return false; }
+        }
+        internal static bool TryProjectScalar(Rect rect, FPWorkbenchSeriesView view, FPWorkbenchPlotSettings settings, FPWorkbenchSeriesPoint point, out Vector2 screen)
+        {
+            screen = default;
+            if (!point.IsValid || !TryScalarAxes(rect, view, settings, out var area, out var x, out var y)) return false;
+            try { double fy = y.Fraction(point.Y); screen = new Vector2(area.x + (float)x.Fraction(point.X) * area.width, area.y + (float)(settings.InvertY ? fy : 1 - fy) * area.height); return screen.x >= area.x && screen.x <= area.xMax && screen.y >= area.y && screen.y <= area.yMax; }
+            catch (ArgumentOutOfRangeException) { return false; }
         }
         public static void Draw(Rect rect, FPWorkbenchSeriesView summary, FPWorkbenchPlotSettings settings, string label, FPWorkbenchOverlayView overlay = null, Color[] colors = null, FPWorkbenchOverlayAxes axes = null)
         {
@@ -52,9 +83,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 try { leftRange = axes.Resolve(overlay, settings, false); rightRange = axes.Resolve(overlay, settings, true); }
                 catch (ArgumentException ex) { GUI.Label(rect, ex.Message); return; }
             }
-            float left = string.IsNullOrEmpty(settings.YLabel) ? 75 : 95;
-            float bottom = string.IsNullOrEmpty(settings.XLabel) ? 50 : 70;
-            Rect plot = new Rect(rect.x + left, rect.y + 25, Math.Max(1, rect.width - left - (dual ? 95 : 15)), Math.Max(1, rect.height - 25 - bottom));
+            Rect plot = PlotRect(rect, settings, dual);
             if (!string.IsNullOrEmpty(settings.XLabel))
                 GUI.Label(new Rect(plot.x, plot.yMax + 20, plot.width, 18), new GUIContent(settings.XLabel, settings.XLabel), EditorStyles.centeredGreyMiniLabel);
             if (!string.IsNullOrEmpty(settings.YLabel))
@@ -141,16 +170,42 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     if (!exact)
                     {
                         aggregated = true;
-                        Line(x, low, x, high);
-                        if (Math.Abs(low - high) < 1) EditorGUI.DrawRect(new Rect(x, low, 2, 1), Handles.color);
+                        if (bin.RepresentativeCount > 0) {
+                            FPWorkbenchSeriesPoint? prior = null;
+                            for (int j = bin.RepresentativeFirst; j < bin.RepresentativeFirst + bin.RepresentativeCount; j++) {
+                                var point = current.Representatives[j];
+                                if (point.Y < seriesMin || point.Y > seriesMax) { prior = null; continue; }
+                                float marker = settings.MarkerSize;
+                                EditorGUI.DrawRect(new Rect(X(point.X) - marker * .5f, SeriesY(point.Y) - marker * .5f, marker, marker), Handles.color);
+                                if (settings.Style != FPWorkbenchPlotStyle.Points && bin.InvalidCount == 0 && bin.GapCount == 0 && prior.HasValue) {
+                                    if (settings.Style == FPWorkbenchPlotStyle.Step) {
+                                        Line(X(prior.Value.X), SeriesY(prior.Value.Y), X(point.X), SeriesY(prior.Value.Y)); Line(X(point.X), SeriesY(prior.Value.Y), X(point.X), SeriesY(point.Y));
+                                    } else Line(X(prior.Value.X), SeriesY(prior.Value.Y), X(point.X), SeriesY(point.Y));
+                                }
+                                prior = point;
+                            }
+                        } else {
+                            float marker = settings.MarkerSize;
+                            if (settings.Style == FPWorkbenchPlotStyle.Points) {
+                                EditorGUI.DrawRect(new Rect(x - marker * .5f, low - marker * .5f, marker, marker), Handles.color);
+                                EditorGUI.DrawRect(new Rect(x - marker * .5f, high - marker * .5f, marker, marker), Handles.color);
+                            } else if (bin.InvalidCount == 0 && bin.GapCount == 0 && bin.FirstY >= seriesMin && bin.FirstY <= seriesMax && bin.LastY >= seriesMin && bin.LastY <= seriesMax) {
+                                if (settings.Style == FPWorkbenchPlotStyle.Step) { Line(X(bin.FirstX), SeriesY(bin.FirstY), X(bin.LastX), SeriesY(bin.FirstY)); Line(X(bin.LastX), SeriesY(bin.FirstY), X(bin.LastX), SeriesY(bin.LastY)); }
+                                else Line(X(bin.FirstX), SeriesY(bin.FirstY), X(bin.LastX), SeriesY(bin.LastY));
+                            }
+                        }
+                        if (settings.Style != FPWorkbenchPlotStyle.Points) {
+                            var rangeColor = Handles.color; Handles.color = new Color(rangeColor.r, rangeColor.g, rangeColor.b, .3f);
+                            Line(x, low, x, high); Handles.color = rangeColor;
+                        }
                     }
-                    else if (settings.Style == FPWorkbenchPlotStyle.Points)
+                    else
                     {
                         float size = settings.MarkerSize;
                         EditorGUI.DrawRect(new Rect(X(bin.FirstX) - size * .5f, SeriesY(bin.FirstY) - size * .5f, size, size), Handles.color);
                     }
-                    else EditorGUI.DrawRect(new Rect(X(bin.FirstX), SeriesY(bin.FirstY), 1, 1), Handles.color);
-                    if (settings.Style != FPWorkbenchPlotStyle.Points && continuous && bin.Count == 1 && previous.Count == 1 && bin.InvalidCount == 0 && bin.GapCount == 0 && previous.InvalidCount == 0 && previous.EndIndex == bin.FirstIndex && bin.FirstY >= seriesMin && bin.FirstY <= seriesMax && previous.LastY >= seriesMin && previous.LastY <= seriesMax)
+
+                    if (settings.Style != FPWorkbenchPlotStyle.Points && continuous && bin.InvalidCount == 0 && bin.GapCount == 0 && previous.InvalidCount == 0 && previous.EndIndex == bin.FirstIndex && bin.FirstY >= seriesMin && bin.FirstY <= seriesMax && previous.LastY >= seriesMin && previous.LastY <= seriesMax)
                     {
                         if (settings.Style == FPWorkbenchPlotStyle.Step)
                         {
@@ -164,7 +219,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 Handles.color = old; Handles.EndGUI();
                 if (logOmitted > 0) GUI.Label(new Rect(plot.x + 4, plot.y + 20, plot.width - 8, 18), "Log10: " + logOmitted + " nonpositive/mixed envelopes omitted; zoom for individual samples", EditorStyles.miniLabel);
-                if (aggregated) GUI.Label(new Rect(plot.x + 4, plot.y + 2, plot.width - 8, 18), "Extrema envelopes • zoom in for individual samples", EditorStyles.miniLabel);
+                if (aggregated) GUI.Label(new Rect(plot.x + 4, plot.y + 2, plot.width - 8, 18), settings.Style == FPWorkbenchPlotStyle.Points ? "Represented source samples • zoom for all samples" : "Faint ranges: binned min/max • markers: source samples • zoom for all samples", EditorStyles.miniLabel);
             }
             GUI.Label(new Rect(plot.x, plot.yMax + (string.IsNullOrEmpty(settings.XLabel) ? 20 : 40), plot.width, 18), (summary.OriginUtcTicks == 0 ? "X: bound numeric/row units" : "Elapsed s from " + new DateTime(summary.OriginUtcTicks, DateTimeKind.Utc).ToString("yyyy-MM-dd HH:mm:ss.ffffff 'UTC'", CultureInfo.InvariantCulture)) + "; cache records read: " + summary.RecordsRead, EditorStyles.miniLabel);
         }

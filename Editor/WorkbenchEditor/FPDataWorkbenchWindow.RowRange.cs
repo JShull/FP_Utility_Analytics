@@ -14,7 +14,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void DrawRowRangeControls(Sheet sheet)
         {
-            SidebarSection("Row Range");
+            FuzzPhyte.Utility.Editor.FPMeshPreviewEditorUtility.DrawSectionDivider();
+            showRowRange = EditorGUILayout.Foldout(showRowRange, "Row Range", true);
+            if (!showRowRange) return;
             var rows = sheet.Binding.Rows; long count = sheet.Dataset.RowCount;
             if (sheet.RowRangeDraftEnd == 0) { sheet.RowRangeDraftFirst = rows.First(count) + 1; sheet.RowRangeDraftEnd = rows.End(count); }
             EditorGUILayout.LabelField("Used by plots", rows.Enabled ? (rows.FirstRow + 1).ToString("N0") + " - " + rows.EndRow.ToString("N0") : "All source rows");
@@ -85,11 +87,23 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private static void SetFigureRows(FPWorkbenchFigureDocument figure, Sheet sheet)
         {
-            figure.SourceSheetId = sheet.Id; figure.Rows = sheet.Binding.Rows.Copy(); figure.Binding.Rows = figure.Rows.Copy();
+            figure.SourceSheetId = sheet.Id; figure.SourceSheetName = sheet.Name; figure.Rows = sheet.Binding.Rows.Copy(); figure.Binding.Rows = figure.Rows.Copy();
             if (figure.Kind == FPWorkbenchFigureKind.Histogram) {
                 figure.FirstRow = figure.Rows.First(sheet.Dataset.RowCount); figure.EndRow = figure.Rows.End(sheet.Dataset.RowCount); figure.FitHistogramOnOpen = true;
             }
             figure.Plot.HasRange = false;
+        }
+        internal static FPWorkbenchSeriesBinding FigureXBinding(string workbook, string id)
+        {
+            foreach (var window in Resources.FindObjectsOfTypeAll<FPDataWorkbenchWindow>())
+                if (window.workbookId == workbook) { var sheet = window.sheets.Find(s => s.Id == id); if (sheet?.Dataset != null) return sheet.Binding.Copy(sheet.Dataset.ColumnCount); }
+            return null;
+        }
+        internal static string FigureSheetName(string workbook, string id, string saved)
+        {
+            foreach (var window in Resources.FindObjectsOfTypeAll<FPDataWorkbenchWindow>())
+                if (window.workbookId == workbook) { var name = window.PlotSheetName(id); if (!string.IsNullOrEmpty(name)) return name; }
+            return saved ?? "";
         }
         internal static void DrawFigureRowScope(string sheetId, FPWorkbenchRowRange rows, long count)
         {

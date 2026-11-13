@@ -32,7 +32,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             string output = Path.GetFullPath(directory), parent = Path.GetDirectoryName(Path.GetFullPath(directory));
             if (!output.EndsWith(".fpfigure", StringComparison.OrdinalIgnoreCase) || Directory.Exists(output) || File.Exists(output)) throw new IOException("Choose a new .fpfigure output directory.");
             if (!Directory.Exists(parent)) throw new DirectoryNotFoundException(parent);
-            long geometryVertices = 4096; foreach (var series in view.Series) geometryVertices = checked(geometryVertices + series.Bins.Length * 12L);
+            long geometryVertices = 4096; foreach (var series in view.Series) geometryVertices = checked(geometryVertices + FPWorkbenchPlotView.GeometryVertices(series, settings.Style));
             using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, geometryVertices);
             var figure = DescribeFigure(); figure.Validate();
             var metadata = new OverlayImageProvenance { Width = width, Height = height, Figure = figure, SourcePath = dataset.SourcePath,
@@ -42,7 +42,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             Texture2D image = null;
             try {
                 image = FPWorkbenchFigureWindow.RenderSeriesImage(view.Series[0], settings, "Multi-series figure", width, height,
-                    out metadata.Aggregated, out metadata.OmittedLogBins, view, colors, axes, legends);
+                    out metadata.Aggregated, out metadata.OmittedLogBins, view, colors, axes, legends, pointsOfInterest, InterestAxisKey, graphSelection.Color, sourceSheetName);
                 return reservation.Publish(output, image.GetPixels32(), width, height, metadata, imageJob?.Token ?? default);
             }
             finally { if (image != null) DestroyImmediate(image); }
@@ -51,7 +51,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             imageJob?.Draw();
             showImageExport = EditorGUILayout.Foldout(showImageExport, "Image export", true); if (!showImageExport) return;
-            using (new EditorGUILayout.HorizontalScope()) {
+            using (new EditorGUILayout.VerticalScope()) {
                 imageWidth = EditorGUILayout.IntField("PNG width", imageWidth); imageHeight = EditorGUILayout.IntField("Height", imageHeight);
                 using (new EditorGUI.DisabledScope(Busy || view == null || FPWorkbenchImageExport.IsActive)) if (GUILayout.Button("Export PNG…")) {
                     string path = EditorUtility.SaveFilePanel("Export overlay image and provenance", "", "Overlay", "fpfigure");

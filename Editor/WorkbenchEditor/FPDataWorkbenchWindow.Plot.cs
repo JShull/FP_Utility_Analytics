@@ -60,49 +60,24 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void DrawPlotControls(Sheet sheet)
         {
-            sheet.Binding ??= new FPWorkbenchSeriesBinding(); sheet.Plot ??= new FPWorkbenchPlotSettings();
-            EnsurePlotUndo(sheet);
-            SidebarSection("Series binding");
-            sheet.PlotColumn = EditorGUILayout.Popup("Y column", Mathf.Clamp(sheet.PlotColumn, 0, DisplayColumnCount(sheet) - 1), sheet.TableNames ?? sheet.ColumnNames);
-            var mode = (FPWorkbenchXMode)EditorGUILayout.EnumPopup("X axis", sheet.Binding.XMode);
-            if (mode != sheet.Binding.XMode) { sheet.Binding.XMode = mode; sheet.Binding.XDerivedId = ""; }
-            if (sheet.Binding.XMode == FPWorkbenchXMode.Numeric)
-            {
-                int shown = sheet.Binding.HasDerivedX ? sheet.Dataset.ColumnCount + sheet.Binding.ResolveDerivedX(sheet.TableProgram) : sheet.Binding.XColumn;
-                int selected = EditorGUILayout.Popup("X column", shown, sheet.TableNames ?? sheet.ColumnNames);
-                if (selected >= sheet.Dataset.ColumnCount) { sheet.Binding.XDerivedId = sheet.TableProgram.ColumnId(selected - sheet.Dataset.ColumnCount); sheet.Binding.XColumn = 0; }
-                else { sheet.Binding.XDerivedId = ""; sheet.Binding.XColumn = selected; }
-            }
-            else if (sheet.Binding.XMode == FPWorkbenchXMode.UtcDateTime)
-                sheet.Binding.XColumn = EditorGUILayout.Popup("UTC time column", sheet.Binding.XColumn, sheet.ColumnNames);
-            if (sheet.Binding.XMode == FPWorkbenchXMode.UtcDateTime)
-            {
-                sheet.Binding.DateColumn = EditorGUILayout.Popup("UTC date column", sheet.Binding.DateColumn, sheet.ColumnNames);
-                sheet.Binding.UtcFormat = EditorGUILayout.TextField(new GUIContent("UTC format", FPWorkbenchPlotView.UtcFormatTooltip), sheet.Binding.UtcFormat);
-            }
-            sheet.Binding.MaximumGap = EditorGUILayout.DoubleField(new GUIContent("Gap threshold", "0 disables gap detection. Units follow X; UTC uses seconds."), sheet.Binding.MaximumGap);
-            if (GUILayout.Button("Apply binding / build plot")) StartSeries(sheet, true);
-            if (sheet.FigureLease != null && sheet.FigureLease.Session.IsBusy)
-            {
-                GUILayout.Label(sheet.FigureLease.Session.WaitingForMemory ? "Waiting for shared memory/background capacity…" : sheet.FigureLease.Session.IsBuilding ? "Building/verifying series cache…" : "Reading cached view…", EditorStyles.miniLabel);
-                if (GUILayout.Button("Close plot")) { sheet.FigureLease.Dispose(); sheet.FigureLease = null; sheet.Series = null; sheet.ShowPlot = false; summary = null; }
-            }
-            SidebarSection("Other plot windows");
-            if (GUILayout.Button("Open 3D Point Window"))
+            SidebarSection("Table plot");
+            if (GUILayout.Button("Open Plot Window")) OpenSheetFigure(sheet);
+            SidebarSection("Figures from this sheet");
+            if (GUILayout.Button("Open 3D Figure"))
             {
                 try { FPWorkbenchPoint3DWindow.Open(workbookId, sheet.Dataset, 0, Math.Min(1, DisplayColumnCount(sheet) - 1), Math.Min(2, DisplayColumnCount(sheet) - 1), sheet.TableProgram, sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), sheet.Binding.Rows, sheet.Id); }
                 catch (Exception ex) { error = ex.Message; }
             }
-            if (GUILayout.Button("Open Scatter Window"))
+            if (GUILayout.Button("Open Scatter Figure"))
             {
                 try
                 {
-                    int x = sheet.Binding.XMode == FPWorkbenchXMode.Numeric ? (sheet.Binding.HasDerivedX ? sheet.Dataset.ColumnCount + sheet.Binding.ResolveDerivedX(sheet.TableProgram) : sheet.Binding.XColumn) : 0;
-                    FPWorkbenchScatterWindow.Open(workbookId, sheet.Dataset, x, sheet.PlotColumn, sheet.TableProgram, sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), rows: sheet.Binding.Rows, sheetId: sheet.Id);
+                    int x = sheet.Binding.XMode == FPWorkbenchXMode.Numeric ? (sheet.Binding.HasDerivedX ? sheet.Dataset.ColumnCount + sheet.Binding.ResolveDerivedX(sheet.TableProgram) : sheet.Binding.XColumn) : sheet.Binding.XMode == FPWorkbenchXMode.UtcDateTime ? sheet.Binding.XColumn : 0;
+                    FPWorkbenchScatterWindow.Open(workbookId, sheet.Dataset, x, sheet.PlotColumn, sheet.TableProgram, sheet.ShowOriginal ? null : SnapshotFor(sheet.Dataset.DatasetId), rows: sheet.Binding.Rows, sheetId: sheet.Id, xBinding: sheet.Binding);
                 }
                 catch (Exception ex) { error = ex.Message; }
             }
-            if (GUILayout.Button("Open Histogram Window"))
+            if (GUILayout.Button("Open Histogram Figure"))
             {
                 try
                 {
@@ -112,7 +87,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 catch (Exception ex) { error = ex.Message; }
             }
-            if (GUILayout.Button("Open Multi-series Window"))
+            if (GUILayout.Button("Open Multi-series Figure"))
             {
                 try
                 {
@@ -122,41 +97,56 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 catch (Exception ex) { error = ex.Message; }
             }
-            if (sheet.Series != null)
-            {
-                sheet.PresentationUndo ??= new FPWorkbenchPresentationUndo(Repaint);
-                sheet.PresentationUndo.Begin(sheet.Plot);
-                SidebarSection("Plot labels & axes");
-                if (GUILayout.Button("Open Figure Window"))
-                    FPWorkbenchFigureWindow.Open(workbookId + ":" + sheet.Id, DescribeSheet(sheet), sheet.Dataset, sheet.TableProgram);
-                FPWorkbenchPlotView.LabelControls(sheet.Plot);
-                SidebarSection("View range");
-                sheet.Plot.StartX = EditorGUILayout.DoubleField("X start", sheet.Plot.StartX);
-                sheet.Plot.EndX = EditorGUILayout.DoubleField("X end", sheet.Plot.EndX);
-                sheet.Plot.InvertY = EditorGUILayout.Toggle("Invert Y (depth)", sheet.Plot.InvertY);
-                SidebarSection("Plot style");
-                FPWorkbenchPlotView.StyleControls(sheet.Plot);
-                SidebarSection("Grid & Y limits");
-                sheet.Plot.Grid = EditorGUILayout.Toggle("Grid", sheet.Plot.Grid);
-                sheet.Plot.XTickSpacing = EditorGUILayout.DoubleField("X grid spacing", sheet.Plot.XTickSpacing);
-                sheet.Plot.YTickSpacing = EditorGUILayout.DoubleField("Y grid spacing", sheet.Plot.YTickSpacing);
-                sheet.Plot.LockY = EditorGUILayout.Toggle("Lock Y", sheet.Plot.LockY);
-                if (sheet.Plot.LockY)
-                {
-                    sheet.Plot.MinimumY = EditorGUILayout.DoubleField("Y minimum", sheet.Plot.MinimumY);
-                    sheet.Plot.MaximumY = EditorGUILayout.DoubleField("Y maximum", sheet.Plot.MaximumY);
-                }
-                SidebarSection("Frame & fit");
-                using (new UnityEditor.EditorGUI.DisabledScope(sheet.Selection == null || sheet.FigureLease == null || sheet.FigureLease.Session.IsBuilding))
-                    if (GUILayout.Button(new GUIContent("Frame selected table rows", "Navigate X to selected row timestamps; does not filter samples or change the bound columns. Equal-X neighbors may be visible."))) BeginSelectionFrame(sheet);
-                if (GUILayout.Button("Fit X")) sheet.Plot.Fit(sheet.Series.FirstX, sheet.Series.LastX);
-                if (GUILayout.Button("Fit Y") && summary != null && summarySheet == sheet.Id && !double.IsNaN(summary.Minimum))
-                { sheet.Plot.MinimumY = summary.Minimum; sheet.Plot.MaximumY = summary.Maximum; }
-                sheet.PresentationUndo.End();
-                EditorGUILayout.HelpBox(sheet.Series.Binding.XMode == FPWorkbenchXMode.UtcDateTime
-                    ? "X shows elapsed seconds from the declared UTC origin. Source measurements remain unchanged."
-                    : "Numeric/row X is used exactly as bound. Applying a new binding rebuilds or reuses its cache.", MessageType.Info);
+        }
+        private void OpenSheetFigure(Sheet sheet) => FPWorkbenchPlotSettingsWindow.Open(this);
+        internal FPWorkbenchFigureWindow GetOrCreatePlotFigure()
+        {
+            var sheet = Current; if (sheet?.Dataset == null) return null;
+            if (sheet.FigureLease == null) StartSeries(sheet, false);
+            if (sheet.FigureLease == null) return null;
+            string key = workbookId + ":" + sheet.Id;
+            foreach (var existing in Resources.FindObjectsOfTypeAll<FPWorkbenchFigureWindow>())
+                if (existing.PlotSettingsId == key) { existing.Show(); return existing; }
+            return FPWorkbenchFigureWindow.Open(key, DescribeSheet(sheet), sheet.Dataset, sheet.TableProgram);
+        }
+
+        internal string ActivePlotSheetId => Current?.Id;
+        internal static bool FindPlotOwner(string key, out FPDataWorkbenchWindow owner, out string sheetId)
+        {
+            foreach (var candidate in Resources.FindObjectsOfTypeAll<FPDataWorkbenchWindow>())
+                foreach (var sheet in candidate.sheets)
+                    if (key == candidate.workbookId + ":" + sheet.Id) { owner = candidate; sheetId = sheet.Id; return true; }
+            owner = null; sheetId = null; return false;
+        }
+        internal string PlotSheetName(string id) => sheets.Find(s => s.Id == id)?.Name;
+        internal bool HasPlotSheet(string id) => sheets.Exists(s => s.Id == id);
+        internal bool RevealScalarPoint(string id, FPWorkbenchSeriesBinding binding, FPWorkbenchSeriesPoint point)
+        {
+            int index = sheets.FindIndex(s => s.Id == id && s.Dataset != null);
+            if (index < 0) return false;
+            active = index; CancelPlotPick(true); RevealPlotPoint(sheets[index], binding, point); Focus(); return true;
+        }
+        internal void DrawPlotSettings(FPWorkbenchPlotSettingsWindow panel, string id)
+        {
+            var sheet = sheets.Find(s => s.Id == id);
+            if (sheet?.Dataset == null) { EditorGUILayout.HelpBox("Waiting for this sheet's source to finish loading.", MessageType.Info); return; }
+            EnsureTableSchema(sheet); EnsurePlotUndo(sheet);
+            if (panel.BindingSection()) {
+                if (FPWorkbenchPlotSettingsWindow.BindingControls(sheet.Binding, sheet.Dataset.ColumnCount, sheet.TableProgram,
+                    sheet.ColumnNames, sheet.TableNames ?? sheet.ColumnNames, ref sheet.PlotColumn)) StartSeries(sheet, true);
+                var rows = sheet.Binding.Rows;
+                GUILayout.Label(rows.Enabled ? "Inherited sheet rows: " + (rows.FirstRow + 1).ToString("N0") + " – " + rows.EndRow.ToString("N0") : "Inherited sheet rows: all rows", EditorStyles.miniLabel);
             }
+            if (sheet.FigureLease != null && sheet.FigureLease.Session.IsBusy)
+                EditorGUILayout.HelpBox(sheet.FigureLease.Session.WaitingForMemory ? "Waiting for shared capacity…" : "Updating cached plot…", MessageType.Info);
+            if (sheet.FigureLease?.Session.Error != null) EditorGUILayout.HelpBox(sheet.FigureLease.Session.Error.Message, MessageType.Error);
+            sheet.PresentationUndo ??= new FPWorkbenchPresentationUndo(Repaint);
+            sheet.PresentationUndo.Begin(sheet.Plot);
+            try {
+                panel.PresentationControls(sheet.Plot, sheet.Series, sheet.FigureLease?.Session.View, () => BeginSelectionFrame(sheet),
+                    sheet.Selection != null && sheet.FigureLease != null && !sheet.FigureLease.Session.IsBuilding);
+            } finally { sheet.PresentationUndo.End(); }
+            if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
         }
     }
 }

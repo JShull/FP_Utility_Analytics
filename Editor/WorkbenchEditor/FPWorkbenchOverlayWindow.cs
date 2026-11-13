@@ -50,7 +50,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private CancellationTokenSource lifetime, queryCancellation;
         private double requestedStart, requestedEnd;
         private string error;
-        [SerializeField] private string sourceSheetId = "";
+        [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
+        [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
+        private bool pinnedReferencesReady;
         private bool Busy => opening != null || pendingOpening || building != null || pendingBuild != null || querying != null || waitingForMemory;
         public static FPWorkbenchOverlayWindow Open(string workbookId, FPWorkbenchCsvDataset source, FPWorkbenchSeriesBinding commonX, int yColumn, FPWorkbenchChangeSnapshot changes = null, FPWorkbenchFormulaProgram calculationProgram = null, string derivedId = null, string sheetId = "")
         {
@@ -64,14 +67,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             window.datasetId = source.DatasetId; window.binding = validated; window.columns.Add(selected); window.derivedColumns.Add(derivedId ?? "");
             window.calculations = calculationProgram == null ? null : JsonUtility.ToJson(calculationProgram.Definition);
             window.colors = new[] { SeriesColor(selected) }; window.corrections = changes?.Json;
-            window.sourceSheetId = sheetId;
+            window.sourceSheetId = sheetId; window.sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(window.WorkbookId, sheetId, "");
             window.Attach(source); window.BeginBuild(); FPDataWorkbenchWindow.RememberFigure(workbookId, window.DescribeFigure());
             window.titleContent = new GUIContent("Multi-series Figure"); window.Show(); return window;
         }
         private static Color SeriesColor(int column) => Color.HSVToRGB((column * .618034f) % 1, .65f, .95f);
         internal void ApplySheetRows(FPWorkbenchFigureDocument figure)
         {
-            sourceSheetId = figure.SourceSheetId; binding.Rows = figure.Rows.Copy(); settings.HasRange = false;
+            sourceSheetId = figure.SourceSheetId; sourceSheetName = figure.SourceSheetName; binding.Rows = figure.Rows.Copy(); settings.HasRange = false;
             if (dataset == null) { appliedBinding = null; return; }
             lifetime.Cancel(); lifetime.Dispose(); lifetime = new CancellationTokenSource();
             queryCancellation?.Cancel(); queryCancellation?.Dispose(); queryCancellation = null;
@@ -83,13 +86,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnEnable()
         {
-            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
-            minSize = new Vector2(600, 420); lifetime = new CancellationTokenSource(); EditorApplication.update += Tick;
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable); graphSelection = new FPWorkbenchGraphSelection(this);
+            minSize = new Vector2(920, 520); lifetime = new CancellationTokenSource(); EditorApplication.update += Tick;
             pendingOpening = !string.IsNullOrEmpty(cache);
         }
         private void OnDisable()
         {
-            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); diskLease?.Dispose(); diskLease = null;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); CancelPick(true); graphSelection?.Dispose(); graphSelection = null; diskLease?.Dispose(); diskLease = null;
+            pointsOfInterest.Dispose();
             imageJob?.Dispose(); imageJob = null;
             axisAssignmentUndo?.Dispose(); axisAssignmentUndo = null;
             rightPresentationUndo?.Dispose(); rightPresentationUndo = null;
@@ -108,7 +112,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         internal FPWorkbenchFigureDocument DescribeFigure() => new FPWorkbenchFigureDocument
         {
             Id = figureId, Name = string.IsNullOrEmpty(settings.Title) ? "Multi-series figure" : settings.Title,
-            DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Overlay, SourceSheetId = sourceSheetId, Rows = (appliedBinding ?? binding).Rows.Copy(), Binding = appliedBinding ?? binding, Plot = settings, Axes = axes,
+            DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Overlay, SourceSheetId = sourceSheetId, SourceSheetName = sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName), PointsOfInterest = pointsOfInterest.Snapshot(), Rows = (appliedBinding ?? binding).Rows.Copy(), Binding = appliedBinding ?? binding, Plot = settings, Axes = axes,
             YColumns = PhysicalColumns(), YDerivedIds = derivedColumns.ToArray(), Colors = (Color[])colors.Clone(),
             HasCalculationSnapshot = !string.IsNullOrEmpty(calculations),
             CalculationSnapshot = string.IsNullOrEmpty(calculations) ? null : JsonUtility.FromJson<FPWorkbenchFormulaSet>(calculations),
@@ -118,7 +122,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         internal static FPWorkbenchOverlayWindow OpenSaved(string workbookId, FPWorkbenchCsvDataset source, FPWorkbenchFigureDocument saved)
         {
             saved.Validate(); var window = CreateInstance<FPWorkbenchOverlayWindow>(); window.workbook = workbookId; window.figureId = saved.Id;
-            window.sourceSheetId = saved.SourceSheetId;
+            window.sourceSheetId = saved.SourceSheetId; window.sourceSheetName = saved.SourceSheetName; window.pointsOfInterest.Restore(saved.PointsOfInterest);
             window.cache = source.CacheDirectory; window.datasetId = saved.DatasetId; window.binding = saved.Binding.Copy(source.ColumnCount);
             window.axes = JsonUtility.FromJson<FPWorkbenchOverlayAxes>(JsonUtility.ToJson(saved.Axes));
             window.settings = JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(saved.Plot)); window.columns = new List<int>(saved.YColumns);
@@ -227,7 +231,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     var candidate = task.GetAwaiter().GetResult();
                     if (requestedStart == settings.StartX && requestedEnd == settings.EndX) {
                         ClearView(); view = candidate; viewMemory = queryMemory; queryMemory = null;
-                        long retained = 4096; foreach (var series in view.Series) retained = checked(retained + 512 + series.Bins.Length * 128L);
+                        long retained = 4096; foreach (var series in view.Series) retained = checked(retained + 512 + series.Bins.Length * 128L + series.Representatives.Length * 40L);
                         viewMemory.Complete(retained); error = null;
                     }
                 }
@@ -249,11 +253,26 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     repaint = true;
                 }
             }
+            if (TickPick()) repaint = true;
             if (repaint) Repaint();
         }
         private void ClearView() { view = null; viewMemory?.Dispose(); viewMemory = null; }
         private void OnGUI()
         {
+            sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
+            GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
+            if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, appliedBinding?.Rows ?? binding.Rows, dataset.RowCount);
+            using (new EditorGUILayout.HorizontalScope()) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                    figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
+                    try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
+                }
+                using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
+            }
+        }
+        private void DrawFigureSettings()
+        {
+
             if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, binding.Rows, dataset.RowCount);
             GUILayout.Label("Shared-source overlay • " + (snapshot == null ? "Original snapshot" : "Effective snapshot"), EditorStyles.boldLabel);
             if (program != null && program.ColumnCount > 0) GUILayout.Label("Calculated series use the frozen formula snapshot.", EditorStyles.miniLabel);
@@ -317,7 +336,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (showFigureSettings)
             {
                 FPWorkbenchPlotView.LabelControls(settings);
-                FPWorkbenchPlotView.StyleControls(settings);
+                FPWorkbenchPlotView.StyleControls(settings, styleLabel: "Figure style");
                 settings.XTickSpacing = EditorGUILayout.DoubleField("X grid spacing", settings.XTickSpacing);
                 settings.YTickSpacing = EditorGUILayout.DoubleField("Y grid spacing", settings.YTickSpacing);
             }
@@ -346,11 +365,17 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (waitingForMemory) GUILayout.Label("Waiting for shared view memory/read capacity…", EditorStyles.miniLabel);
             else if (Busy) GUILayout.Label("Updating all series in background…", EditorStyles.miniLabel);
             if (error != null) EditorGUILayout.HelpBox(error, MessageType.Warning);
+        }
+        private void DrawFigureGraph()
+        {
+            DrawSelectionControls();
             Rect plot = GUILayoutUtility.GetRect(100, 10000, 100, 10000, GUILayout.ExpandHeight(true));
             FPWorkbenchPlotView.Draw(plot, view?.Series[0], settings, "Shared X • source units unchanged", view, colors, axes);
+            DrawPick(plot);
+            pointsOfInterest.DrawMarkers(InterestAxisKey, p => ProjectInterest(p, FPWorkbenchPlotView.PlotRect(plot, settings, Array.Exists(axes.Right, side => side)), false), graphSelection.Color);
             if (view != null && (view.StartX != settings.StartX || view.EndX != settings.EndX)) GUI.Label(new Rect(plot.x + 80, plot.y + 23, plot.width - 90, 20), "Updating viewport (previous range shown)", EditorStyles.miniLabel);
             HandleDrop(plot);
-        }
+                }
         private void SetAxisSide(int index, bool right)
         {
             if (axes.Right[index] == right) return;

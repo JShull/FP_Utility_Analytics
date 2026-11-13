@@ -11,7 +11,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
     using System.Threading.Tasks;
 
     /// <summary>Persisted sorted-X points plus a 256x4 summary pyramid. Queries never reparse CSV.</summary>
-    public sealed class FPWorkbenchSeriesCache
+    public sealed partial class FPWorkbenchSeriesCache
     {
         private const int Magic = 0x31535046, PointBytes = 32, BinBytes = 104;
         private readonly FPWorkbenchCsvDataset dataset;
@@ -216,7 +216,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             var inputs = new BinaryReader[levels];
             try
             {
-                if (stop - first <= bins * 2L)
+                if (stop - first <= Math.Min(4096L, bins * 8L))
                     for (long i = first; i < stop; i++) { token.ThrowIfCancellationRequested(); result.Add(FPWorkbenchSeriesBin.Point(i, ReadAt(points, i))); reads++; }
                 else
                 {
@@ -237,6 +237,24 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             }
             finally { foreach (var reader in inputs) reader?.Dispose(); }
             var view = new FPWorkbenchSeriesView { DatasetId = dataset.DatasetId, FormulaFingerprint = FormulaFingerprint, CorrectionFingerprint = CorrectionFingerprint, Bins = result.ToArray(), StartX = start, EndX = end, OriginUtcTicks = OriginUtcTicks, RecordsRead = reads };
+            var representatives = new List<FPWorkbenchSeriesPoint>();
+            for (int i = 0; i < view.Bins.Length; i++) {
+                var bin = view.Bins[i]; if (bin.Count == 0 || bin.Count == 1 && bin.InvalidCount == 0) continue;
+                bin.RepresentativeFirst = representatives.Count;
+                long a = bin.MinimumRow - FirstSourceRow, b = bin.MaximumRow - FirstSourceRow; if (a > b) { long swap = a; a = b; b = swap; }
+                void Add(long index) {
+                    if (index < 0 || index >= RowCount) throw new InvalidDataException("Summary sample lies outside the series cache.");
+                    var point = ReadAt(points, index); reads++;
+                    if (point.Row != FirstSourceRow + index) throw new InvalidDataException("Summary source-row identity differs.");
+                    if (point.IsValid) representatives.Add(point);
+                }
+                Add(bin.FirstIndex);
+                if (a != bin.FirstIndex && a != bin.EndIndex - 1) Add(a);
+                if (b != a && b != bin.FirstIndex && b != bin.EndIndex - 1) Add(b);
+                if (bin.EndIndex - 1 != bin.FirstIndex) Add(bin.EndIndex - 1);
+                bin.RepresentativeCount = representatives.Count - bin.RepresentativeFirst; view.Bins[i] = bin;
+            }
+            view.Representatives = representatives.ToArray(); view.RecordsRead = reads;
             foreach (var bin in view.Bins) if (bin.Count > 0)
             {
                 if (double.IsNaN(view.Minimum) || bin.Minimum < view.Minimum) view.Minimum = bin.Minimum;

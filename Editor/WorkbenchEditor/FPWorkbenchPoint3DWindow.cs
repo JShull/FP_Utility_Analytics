@@ -29,7 +29,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private bool invertOrbit, clip, showClip;
         [SerializeField] private bool showOrigin = true, showXAxis = true, showYAxis = true, showZAxis = true, showAxisValues = true;
         [SerializeField] private double minX, maxX = 1, minY, maxY = 1, minZ, maxZ = 1;
-        [SerializeField] private string sourceSheetId = "";
+        [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
+        [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
+        private bool pinnedReferencesReady;
         [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
         private FPWorkbenchCsvDataset dataset;
         private IDisposable diskLease;
@@ -61,6 +64,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private bool selected;
         private int selectedIndex = -1;
         private FPWorkbenchSpatialPoint selection;
+        private FPWorkbenchGraphSelection graphSelection;
         [SerializeField] private int exportWidth = 1600, exportHeight = 1200;
         private FPWorkbenchEditorImageJob imageJob;
         private FPWorkbenchEditorImageJob ImageJob => imageJob ??= new FPWorkbenchEditorImageJob(Repaint);
@@ -88,7 +92,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 throw new IOException("Choose a new .fpfigure output directory; existing outputs are never overwritten.");
             string parent = Path.GetDirectoryName(output);
             if (!Directory.Exists(parent)) throw new DirectoryNotFoundException(parent);
-            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, 128);
+            using var reservation = FPWorkbenchEditorImageReservation.Acquire(width, height, checked(4096L + pointsOfInterest.Values.Count * 160L));
             var figure = DescribeFigure(); figure.Validate();
             var frame = batch.Prepared.Frame;
             var metadata = new ImageProvenance { SourcePath = dataset.SourcePath, Width = width, Height = height,
@@ -98,7 +102,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             PreviewRenderUtility export = null; Texture2D image = null, annotated = null;
             try {
                 export = new PreviewRenderUtility(); bool label = width >= 640 && height >= 480;
-                Rect plot = label ? new Rect(40, 125, width - 80, height - 210) : new Rect(0, 0, width, height);
+                Rect plot = label ? new Rect(40, 125, width - 80 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 210) : new Rect(0, 0, width, height);
                 var rect = new Rect(0, 0, plot.width, plot.height);
                 export.BeginStaticPreview(rect); RenderPoints(export, rect); image = export.EndStaticPreview();
                 if (label) { annotated = AnnotatePointImage(image, export.camera, plot, width, height, metadata); metadata.Annotated = true; }
@@ -140,11 +144,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (corrections != null && corrections.DatasetId != source.DatasetId) throw new ArgumentException("3D correction source differs.");
             var window = CreateInstance<FPWorkbenchPoint3DWindow>(); window.workbook = owner; window.cacheDirectory = source.CacheDirectory; window.datasetId = source.DatasetId;
             window.xColumn = x; window.yColumn = y; window.zColumn = z; window.calculations = formulas == null ? null : JsonUtility.ToJson(formulas.Definition); window.corrections = corrections?.Json;
-            window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange(); window.rowRange.Validate(source.RowCount); window.sourceSheetId = sheetId;
+            window.rowRange = rows?.Copy() ?? new FPWorkbenchRowRange(); window.rowRange.Validate(source.RowCount); window.sourceSheetId = sheetId; window.sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(window.WorkbookId, sheetId, "");
             window.Attach(source); window.BeginBuild(); FPDataWorkbenchWindow.RememberFigure(owner, window.DescribeFigure()); window.titleContent = new GUIContent("3D Point Figure"); window.Show(); return window;
         }
         internal FPWorkbenchFigureDocument DescribeFigure()
         {
+            sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
             if (dataset == null)
             {
                 if (string.IsNullOrEmpty(lastFigureMetadata)) throw new InvalidOperationException("3D source is not admitted yet.");
@@ -154,7 +159,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             string Derived(int c) => c < dataset.ColumnCount ? "" : program.ColumnId(c - dataset.ColumnCount);
             int Physical(int c) => c < dataset.ColumnCount ? c : 0;
             var bounds = batch == null ? (clip ? new FPWorkbenchSpatialBounds(minX, maxX, minY, maxY, minZ, maxZ) : default) : batch.Limits;
-            var figure = new FPWorkbenchFigureDocument { Id = figureId, Name = "3D point figure", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Point3D, Rows = rowRange.Copy(), SourceSheetId = sourceSheetId,
+            var figure = new FPWorkbenchFigureDocument { Id = figureId, Name = "3D point figure", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Point3D, Rows = rowRange.Copy(), SourceSheetId = sourceSheetId, SourceSheetName = sourceSheetName, PointsOfInterest = pointsOfInterest.Snapshot(),
                 Binding = new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, XColumn = Physical(axes[0]), YColumn = Physical(axes[1]), XDerivedId = Derived(axes[0]), YDerivedId = Derived(axes[1]) },
                 PointBudget = batch?.Budget ?? pointBudget, InvalidPolicy = batch?.Policy ?? invalidPolicy, Colors = new[] { pointColor },
                 Spatial = new FPWorkbenchPoint3DSettings { ZColumn = Physical(axes[2]), ZDerivedId = Derived(axes[2]), Clip = batch?.Clip ?? clip,
@@ -177,7 +182,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var window = CreateInstance<FPWorkbenchPoint3DWindow>(); window.workbook = owner; window.figureId = figure.Id; window.cacheDirectory = source.CacheDirectory; window.datasetId = source.DatasetId;
             window.xColumn = x; window.yColumn = y; window.zColumn = z; window.pointBudget = figure.PointBudget; window.invalidPolicy = figure.InvalidPolicy;
             window.calculations = formulas == null ? null : JsonUtility.ToJson(formulas.Definition); window.corrections = figure.HasCorrectionSnapshot ? JsonUtility.ToJson(figure.CorrectionSnapshot) : null;
-            window.rowRange = figure.Rows.Copy(); window.sourceSheetId = figure.SourceSheetId;
+            window.rowRange = figure.Rows.Copy(); window.sourceSheetId = figure.SourceSheetId; window.sourceSheetName = figure.SourceSheetName; window.pointsOfInterest.Restore(figure.PointsOfInterest);
             window.clip = spatial.Clip; window.minX = spatial.MinimumX; window.maxX = spatial.MaximumX; window.minY = spatial.MinimumY; window.maxY = spatial.MaximumY; window.minZ = spatial.MinimumZ; window.maxZ = spatial.MaximumZ;
             window.orbit = spatial.Orbit; window.pan = spatial.Pan; window.zoom = spatial.Zoom; window.pointSize = spatial.PointSize; window.pointColor = figure.Colors[0];
             window.projection = spatial.Orthographic ? FPMeshPreviewProjection.Orthographic : FPMeshPreviewProjection.Perspective; window.invertOrbit = spatial.InvertOrbit;
@@ -186,20 +191,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         internal void ApplySheetRows(FPWorkbenchFigureDocument figure)
         {
-            CancelPointUpdate(); rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId;
-            lastFigureMetadata = JsonUtility.ToJson(figure); selected = false; error = null;
+            CancelPointUpdate(); rowRange = figure.Rows.Copy(); sourceSheetId = figure.SourceSheetId; sourceSheetName = figure.SourceSheetName;
+            lastFigureMetadata = JsonUtility.ToJson(figure); selected = false; graphSelection?.Clear(); error = null;
             if (dataset != null) BeginBuild(); Repaint();
         }
         private void OnEnable()
         {
-            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable);
+            windowActive = true; FPWorkbenchEditorCache.Register(OnDisable); graphSelection = new FPWorkbenchGraphSelection(this);
             minSize = new Vector2(760, 520); cancellation = new CancellationTokenSource(); preview = new PreviewRenderUtility();
             EditorApplication.update += Tick;
             pendingOpening = !string.IsNullOrEmpty(cacheDirectory);
         }
         private void OnDisable()
         {
-            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); diskLease?.Dispose(); diskLease = null;
+            if (!windowActive) return; windowActive = false; FPWorkbenchEditorCache.Unregister(OnDisable); graphSelection?.Dispose(); graphSelection = null; diskLease?.Dispose(); diskLease = null;
+            pointsOfInterest.Dispose();
             imageJob?.Dispose(); imageJob = null;
             Undo.undoRedoPerformed -= RestoreAppearance;
             if (appearanceUndo != null) { Undo.ClearUndo(appearanceUndo); DestroyImmediate(appearanceUndo); appearanceUndo = null; }
@@ -289,7 +295,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     batchMemory?.Dispose(); batchMemory = preparationMemory; preparationMemory = null;
                     // Covers retained point/prepared arrays and estimated readable mesh plus GPU payload, not actual driver allocation.
                     batchMemory.Complete(checked(4096L + next.View.Points.Count * 64L + next.Prepared.Positions.Count * 320L));
-                    batch = next; appliedColumns = next.Columns; selected = false;
+                    batch = next; appliedColumns = next.Columns; selected = false; graphSelection?.Clear();
                 }
                 catch (Exception ex) { error = ex.Message; }
                 preparationMemory?.Dispose(); preparationMemory = null; Repaint();
@@ -317,42 +323,54 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void OnGUI()
         {
+            sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
+            GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
+            if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
+            using (new EditorGUILayout.HorizontalScope()) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                    figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
+                    try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
+                }
+                using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
+            }
+        }
+        private void DrawFigureSettings()
+        {
+
             if (dataset == null) { EditorGUILayout.HelpBox(error ?? (pendingOpening ? "Waiting for shared memory/background capacity…" : "Verifying XYZ source…"), MessageType.Info); return; }
             using (new EditorGUI.DisabledScope(Busy))
-            using (new EditorGUILayout.HorizontalScope())
+            using (new EditorGUILayout.VerticalScope())
             {
-                GUILayout.Label("X", GUILayout.Width(15)); xColumn = EditorGUILayout.Popup(xColumn, names);
-                GUILayout.Label("Y", GUILayout.Width(15)); yColumn = EditorGUILayout.Popup(yColumn, names);
-                GUILayout.Label("Z", GUILayout.Width(15)); zColumn = EditorGUILayout.Popup(zColumn, names);
+                xColumn = EditorGUILayout.Popup("X", xColumn, names);
+                yColumn = EditorGUILayout.Popup("Y", yColumn, names);
+                zColumn = EditorGUILayout.Popup("Z", zColumn, names);
                 if (GUILayout.Button("Apply", GUILayout.Width(60))) BeginBuild();
             }
-            using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 if (GUILayout.Button("Frame", EditorStyles.toolbarButton)) { pan = Vector3.zero; zoom = FPMeshPreviewEditorUtility.DefaultPreviewZoom; }
                 projection = FPMeshPreviewEditorUtility.DrawProjectionPopup(projection); invertOrbit = FPMeshPreviewEditorUtility.DrawInvertCameraOrbitToggle(invertOrbit);
-                GUILayout.Label("Budget", GUILayout.Width(45)); pointBudget = Mathf.Clamp(EditorGUILayout.IntField(pointBudget, GUILayout.Width(65)), 1, 65536);
-                invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup(invalidPolicy, GUILayout.Width(70));
+                pointBudget = Mathf.Clamp(EditorGUILayout.IntField("Point budget", pointBudget), 1, 65536);
+                invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup("Invalid values", invalidPolicy);
             }
-            using (new EditorGUILayout.HorizontalScope())
+            using (new EditorGUILayout.VerticalScope())
             {
-                GUILayout.Label("Show", GUILayout.Width(40));
+                GUILayout.Label("Visibility", EditorStyles.boldLabel);
                 showOrigin = GUILayout.Toggle(showOrigin, new GUIContent("Origin (0,0,0)", "Marks source-coordinate zero when it lies inside the displayed bounds."));
                 showXAxis = GUILayout.Toggle(showXAxis, "X axis"); showYAxis = GUILayout.Toggle(showYAxis, "Y axis"); showZAxis = GUILayout.Toggle(showZAxis, "Z axis");
-                showAxisValues = GUILayout.Toggle(showAxisValues, new GUIContent("Axis values", "Source-coordinate ticks on each visible axis; units follow the bound column."), GUILayout.Width(95));
-                GUILayout.Label(new GUIContent("Near clip", "Small positive camera distance in normalized preview units; does not change source-coordinate clipping."), GUILayout.Width(60));
-                float nextNear = EditorGUILayout.FloatField(nearClip, GUILayout.Width(70));
+                showAxisValues = GUILayout.Toggle(showAxisValues, new GUIContent("Axis values", "Source-coordinate ticks on each visible axis; units follow the bound column."), GUILayout.ExpandWidth(true));
+                float nextNear = EditorGUILayout.FloatField(new GUIContent("Near clip", "Camera distance in normalized preview units."), nearClip);
                 if (!float.IsNaN(nextNear) && !float.IsInfinity(nextNear)) nearClip = Mathf.Clamp(nextNear, .00001f, 1);
             }
-            FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
             string beforeAppearance = AppearanceJson();
-            using (new EditorGUILayout.HorizontalScope())
+            using (new EditorGUILayout.VerticalScope())
             { pointColor = EditorGUILayout.ColorField("Point color", pointColor); pointSize = EditorGUILayout.Slider("Pixels", pointSize, 1, 32); }
             RecordAppearance(beforeAppearance);
             imageJob?.Draw();
             showAppearancePresets = EditorGUILayout.Foldout(showAppearancePresets, "Appearance presets", true);
             if (showAppearancePresets) FPWorkbenchPlotPresetGUI.DrawFileActions(AppearanceJson, ApplyAppearancePreset, "3D appearance preset", "fp3dplot", FPWorkbenchPoint3DPreset.MaximumBytes);
             if (showAppearancePresets) {
-                using (new EditorGUILayout.HorizontalScope()) {
+                using (new EditorGUILayout.VerticalScope()) {
                     exportWidth = EditorGUILayout.IntField("PNG width", exportWidth); exportHeight = EditorGUILayout.IntField("Height", exportHeight);
                     using (new EditorGUI.DisabledScope(Busy || batch == null || FPWorkbenchImageExport.IsActive))
                         if (GUILayout.Button("Export PNG…")) {
@@ -368,9 +386,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (showClip)
             {
                 clip = EditorGUILayout.Toggle("Enable clip bounds", clip);
-                using (new EditorGUILayout.HorizontalScope()) { minX = EditorGUILayout.DoubleField("X min", minX); maxX = EditorGUILayout.DoubleField("X max", maxX); }
-                using (new EditorGUILayout.HorizontalScope()) { minY = EditorGUILayout.DoubleField("Y min", minY); maxY = EditorGUILayout.DoubleField("Y max", maxY); }
-                using (new EditorGUILayout.HorizontalScope()) { minZ = EditorGUILayout.DoubleField("Z min", minZ); maxZ = EditorGUILayout.DoubleField("Z max", maxZ); }
+                using (new EditorGUILayout.VerticalScope()) { minX = EditorGUILayout.DoubleField("X min", minX); maxX = EditorGUILayout.DoubleField("X max", maxX); }
+                using (new EditorGUILayout.VerticalScope()) { minY = EditorGUILayout.DoubleField("Y min", minY); maxY = EditorGUILayout.DoubleField("Y max", maxY); }
+                using (new EditorGUILayout.VerticalScope()) { minZ = EditorGUILayout.DoubleField("Z min", minZ); maxZ = EditorGUILayout.DoubleField("Z max", maxZ); }
                 if (batch != null && GUILayout.Button("Copy full source extents")) { var b = batch.Cache.Bounds; minX = b.MinimumX; maxX = b.MaximumX; minY = b.MinimumY; maxY = b.MaximumY; minZ = b.MinimumZ; maxZ = b.MaximumZ; }
             }
             GUILayout.Label((edits == null ? "Original" : "Effective") + " frozen snapshot • right-drag orbit • middle-drag pan • wheel zoom • click inspect", EditorStyles.miniLabel);
@@ -385,19 +403,18 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 GUILayout.Label(batch.View.Points.Count + " / " + batch.View.MatchingCount + " matching points" + (batch.View.Decimated ? " • sampled" : " • all shown") + "; invalid rows " + batch.Cache.InvalidCount + "; worker " + batch.Milliseconds.ToString("F1") + " ms; mesh upload " + uploadMilliseconds.ToString("F1") + " ms", EditorStyles.miniLabel);
                 GUILayout.Label("X " + names[appliedColumns[0]] + " • Y " + names[appliedColumns[1]] + " • Z " + names[appliedColumns[2]] + "; max local float error " + batch.Prepared.MaximumLocalError.ToString("G3"), EditorStyles.miniLabel);
             }
+        }
+        private void DrawFigureGraph()
+        {
+            if (dataset == null) { EditorGUILayout.HelpBox("Verifying figure source…", MessageType.Info); return; }
             Rect rect = GUILayoutUtility.GetRect(100, 10000, 150, 10000, GUILayout.ExpandHeight(true)); DrawPreview(rect);
+            pointsOfInterest.DrawMarkers(InterestAxisKey, p => ProjectInterest(p, preview.camera, rect, false), graphSelection.Color);
             if (selected)
             {
-                GUILayout.Label("Source row " + selection.Row + ": " + selection.X.ToString("R", CultureInfo.InvariantCulture) + ", " + selection.Y.ToString("R", CultureInfo.InvariantCulture) + ", " + selection.Z.ToString("R", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
-                if (GUILayout.Button("Reveal source row in workbook"))
-                {
-                    var columns = new System.Collections.Generic.SortedSet<int>();
-                    foreach (int axis in appliedColumns) if (axis < dataset.ColumnCount) columns.Add(axis); else foreach (int c in program.SourceDependencies(axis - dataset.ColumnCount)) columns.Add(c);
-                    var physical = new int[columns.Count]; columns.CopyTo(physical);
-                    if (!FPDataWorkbenchWindow.RevealFigureRow(workbook, datasetId, selection.Row, physical)) error = "Open the owning workbook and free a sheet tab to reveal this row.";
-                }
+                graphSelection.Legend("Source row " + (selection.Row + 1) + ": " + selection.X.ToString("R", CultureInfo.InvariantCulture) + ", " + selection.Y.ToString("R", CultureInfo.InvariantCulture) + ", " + selection.Z.ToString("R", CultureInfo.InvariantCulture));
+
             }
-        }
+                }
         private void DrawPreview(Rect rect)
         {
             previewRect = rect;
@@ -551,20 +568,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 if (ProjectSelection(camera, area, out var picked)) {
                     Handles.color = Color.black; Handles.DrawWireDisc(picked, Vector3.forward, 9);
-                    Handles.color = Color.yellow; Handles.DrawWireDisc(picked, Vector3.forward, 7);
+                    Handles.color = graphSelection.Color; Handles.DrawWireDisc(picked, Vector3.forward, 7);
                 }
             }
             finally { Handles.color = oldColor; Handles.EndGUI(); GUI.EndGroup(); }
         }
         private void Inspect(Rect rect, Vector2 mouse)
         {
-            selected = false; selectedIndex = -1; double best = 100; float depth = float.PositiveInfinity;
+            selected = false; graphSelection?.Clear(); selectedIndex = -1; double best = 100; float depth = float.PositiveInfinity;
             for (int i = 0; i < batch.Prepared.Positions.Count; i++)
             {
                 var p = preview.camera.WorldToViewportPoint(batch.Prepared.Positions[i]); if (p.z <= preview.camera.nearClipPlane) continue;
                 double dx = rect.x + p.x * rect.width - mouse.x, dy = rect.y + (1 - p.y) * rect.height - mouse.y, distance = dx * dx + dy * dy;
                 if (distance < best || distance == best && p.z < depth) { best = distance; depth = p.z; selection = batch.View.Points[i]; selectedIndex = i; selected = true; }
             }
+            if (selected) graphSelection.Select(FPWorkbenchGraphSelection.Axes(workbook, sourceSheetId, dataset, program, selection.Row, appliedColumns, appliedColumns[1]));
+            else graphSelection.Clear();
         }
     }
 }

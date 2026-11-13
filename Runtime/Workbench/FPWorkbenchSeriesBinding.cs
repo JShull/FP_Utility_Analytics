@@ -75,6 +75,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
 
     public struct FPWorkbenchSeriesBin
     {
+        [NonSerialized] public int RepresentativeFirst, RepresentativeCount;
         public long FirstIndex, EndIndex, MinimumRow, MaximumRow, Count, InvalidCount, GapCount;
         public double FirstX, LastX, Minimum, Maximum, FirstY, LastY;
         internal static FPWorkbenchSeriesBin Point(long index, FPWorkbenchSeriesPoint point) => new FPWorkbenchSeriesBin
@@ -116,6 +117,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string FormulaFingerprint { get; internal set; }
         public string CorrectionFingerprint { get; internal set; }
         public FPWorkbenchSeriesBin[] Bins { get; internal set; }
+        public FPWorkbenchSeriesPoint[] Representatives { get; internal set; } = Array.Empty<FPWorkbenchSeriesPoint>();
         public double StartX { get; internal set; }
         public double EndX { get; internal set; }
         public long OriginUtcTicks { get; internal set; }

@@ -13,6 +13,34 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
 
     public sealed class FPWorkbenchSourceUnitWindowTests
     {
+        [UnityTest] public IEnumerator HeaderUnitSuggestionsNeedExplicitApplyAndCustomDeclarationsRemainSupported()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "FPUnitPreset-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+            var window = ScriptableObject.CreateInstance<FPDataWorkbenchWindow>(); var type = window.GetType(); const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            try {
+                string path = Path.Combine(root, "source.csv"), original = "Temperature [\u00b0C],Acceleration [m/s\u00b2]\n12,1\n13,2\n"; File.WriteAllText(path, original);
+                window.ShowUtility(); window.position = new Rect(50, 50, 1100, 800); type.GetMethod("AddCsv", flags).Invoke(window, new object[] { path });
+                var sheet = ((IList)type.GetField("sheets", flags).GetValue(window))[0]; var st = sheet.GetType(); var deadline = DateTime.UtcNow.AddSeconds(10);
+                while (st.GetField("Dataset").GetValue(sheet) == null && DateTime.UtcNow < deadline) yield return null;
+                var data = (FPWorkbenchCsvDataset)st.GetField("Dataset").GetValue(sheet); Assert.That(data, Is.Not.Null);
+                type.GetField("showSourceUnits", flags).SetValue(window, true); window.Repaint(); yield return null; yield return null;
+                Assert.That(type.GetField("unitDraft", flags).GetValue(window), Is.EqualTo("degC")); Assert.That(type.GetField("unitCustomOverride", flags).GetValue(window), Is.EqualTo(false));
+                Assert.That(type.GetMethod("ColumnUnitLabel", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { sheet, 0 }), Is.EqualTo("unspecified"), "Header suggestions must not silently declare units.");
+                var symbols = (string[])type.GetField("UnitSymbols", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+                var labels = (string[])type.GetField("UnitLabels", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null); Assert.That(labels.Length, Is.EqualTo(symbols.Length));
+                foreach (string symbol in symbols) { var definition = new FPWorkbenchFormulaSet { DatasetId = data.DatasetId }; definition.SourceUnits.Add(new FPWorkbenchSourceUnit { Column = 0, Units = symbol }); Assert.DoesNotThrow(() => FPWorkbenchFormulaProgram.Compile(data, definition)); }
+                Assert.That(type.GetMethod("ApplySourceUnit", flags).Invoke(window, new object[] { sheet, 0, "degC" }), Is.EqualTo(true));
+                yield return null; yield return null;
+                Assert.That(((FPWorkbenchFormulaProgram)st.GetField("TableProgram").GetValue(sheet)).SourceUnits(0), Is.EqualTo("degC"));
+                type.GetField("unitColumn", flags).SetValue(window, 1); window.Repaint(); yield return null; yield return null;
+                Assert.That(type.GetField("unitDraft", flags).GetValue(window), Is.EqualTo("m/s^2"));
+                type.GetField("unitCustomOverride", flags).SetValue(window, true); type.GetField("unitDraft", flags).SetValue(window, "furlong/s");
+                Assert.That(type.GetMethod("ApplySourceUnit", flags).Invoke(window, new object[] { sheet, 1, "furlong/s" }), Is.EqualTo(true));
+                yield return null; yield return null;
+                Assert.That(((FPWorkbenchFormulaProgram)st.GetField("TableProgram").GetValue(sheet)).SourceUnits(1), Is.EqualTo("furlong*s^-1"));
+                Assert.That(File.ReadAllText(path), Is.EqualTo(original));
+            } finally { window.Close(); Directory.Delete(root, true); }
+        }
         [UnityTest] public IEnumerator TypedDeclarationAuthoringValidatesAtomicallyAndSupportsUndoClearAndPersistence()
         {
             string root = Path.Combine(Path.GetTempPath(), "FPTypeAuthor-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);

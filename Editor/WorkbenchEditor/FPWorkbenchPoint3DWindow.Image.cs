@@ -70,6 +70,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             canvas.Text(source + " | 3D point cloud", width / 2f, height - 24);
             canvas.Text(metadata.RenderedPoints.ToString("N0", CultureInfo.InvariantCulture) + " displayed / " + metadata.MatchingPoints.ToString("N0", CultureInfo.InvariantCulture) + " matching rows; budget " + metadata.PointBudget.ToString("N0", CultureInfo.InvariantCulture) + (metadata.Sampled ? "; sampled display" : "; all matching points"), width / 2f, height - 47);
             canvas.Text("Bound XYZ values; no trajectory reconstruction. Invalid source rows: " + metadata.InvalidSourceRows.ToString("N0", CultureInfo.InvariantCulture), width / 2f, 20);
+            pointsOfInterest.Export(canvas, plot, width, height, InterestAxisKey, p => ProjectInterest(p, camera, plot, true), graphSelection.Color, sourceSheetName);
             return canvas.Render(width, height);
         }
     }
