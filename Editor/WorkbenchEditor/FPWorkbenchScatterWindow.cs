@@ -73,6 +73,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private Rect inspectionRect;
         [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
         [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigureDivider figureDivider = new FPWorkbenchFigureDivider();
         [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
         private bool pinnedReferencesReady;
         [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
@@ -391,11 +392,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbookId, sourceSheetId, sourceSheetName);
             GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
             if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
+            figureDivider ??= new FPWorkbenchFigureDivider();
+            int dividerControl = GUIUtility.GetControlID(731660, FocusType.Passive);
             using (new EditorGUILayout.HorizontalScope()) {
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(figureDivider.Width(position.width)))) {
                     figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
                     try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
                 }
+                figureDivider.Draw(this, dividerControl);
                 using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
             }
         }
@@ -423,16 +427,19 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             presentationUndo ??= new FPWorkbenchPresentationUndo(Repaint); presentationUndo.Begin(settings);
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                if (GUILayout.Button("Fit", EditorStyles.toolbarButton)) { try { Fit(); } catch (ArgumentException ex) { error = ex.Message; } }
-                settings.InvertY = GUILayout.Toggle(settings.InvertY, "Invert Y", EditorStyles.toolbarButton);
-                settings.Grid = GUILayout.Toggle(settings.Grid, "Grid", EditorStyles.toolbarButton);
+                using (new EditorGUILayout.HorizontalScope()) {
+                    if (GUILayout.Button("Fit", EditorStyles.toolbarButton)) { try { Fit(); } catch (ArgumentException ex) { error = ex.Message; } }
+                    settings.InvertY = GUILayout.Toggle(settings.InvertY, "Invert Y", EditorStyles.toolbarButton);
+                    settings.Grid = GUILayout.Toggle(settings.Grid, "Grid", EditorStyles.toolbarButton);
+                }
                 maximumPoints = Mathf.Clamp(EditorGUILayout.IntField("Point budget", maximumPoints), 1, 65536);
                 invalidPolicy = (FPWorkbenchInvalidPolicy)EditorGUILayout.EnumPopup("Invalid values", invalidPolicy);
             }
             showSettings = EditorGUILayout.Foldout(showSettings, "Figure settings", true);
             if (showSettings)
             {
-                FPWorkbenchPlotView.LabelControls(settings); settings.MarkerSize = EditorGUILayout.Slider("Point size", settings.MarkerSize, 1, 16);
+                FPWorkbenchPlotView.LabelControls(settings);
+                settings.MarkerSize = EditorGUILayout.Slider("Point size", settings.MarkerSize, 1, 16);
                 settings.XTickSpacing = EditorGUILayout.DoubleField("X grid spacing", settings.XTickSpacing);
                 settings.YTickSpacing = EditorGUILayout.DoubleField("Y grid spacing", settings.YTickSpacing);
                 settings.StartX = EditorGUILayout.DoubleField("X minimum", settings.StartX); settings.EndX = EditorGUILayout.DoubleField("X maximum", settings.EndX);
@@ -459,25 +466,29 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void Draw(Rect rect)
         {
             if (Event.current.type == EventType.Repaint) inspectionRect = rect;
-            EditorGUI.DrawRect(rect, new Color(.1f, .1f, .1f));
+            EditorGUI.DrawRect(rect, settings.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f));
             if (view == null) { GUI.Label(rect, "Choose numeric X/Y columns and Apply / fit."); return; }
-            Rect plot = new Rect(rect.x + 80, rect.y + 25, Math.Max(1, rect.width - 95), Math.Max(1, rect.height - 85)); var b = view.Bounds;
+            float leftMargin = Math.Max(80, settings.YLabelFontSize + 50), topMargin = Math.Max(25, settings.TitleFontSize + 5), bottomMargin = Math.Max(60, settings.XLabelFontSize + 30);
+            Rect plot = new Rect(rect.x + leftMargin, rect.y + topMargin, Math.Max(1, rect.width - leftMargin - 15), Math.Max(1, rect.height - topMargin - bottomMargin)); var b = view.Bounds;
             FPWorkbenchAxisMapping xMap, yMap;
             try { xMap = new FPWorkbenchAxisMapping(b.MinimumX, b.MaximumX, settings.XScale); yMap = new FPWorkbenchAxisMapping(b.MinimumY, b.MaximumY, settings.YScale); }
             catch (ArgumentException ex) { GUI.Label(plot, ex.Message + " Set positive limits in Figure settings."); return; }
             float X(double x) => plot.x + (float)xMap.Fraction(x) * plot.width;
             float Y(double y) { double t = yMap.Fraction(y); return plot.y + (float)(settings.InvertY ? t : 1 - t) * plot.height; }
-            GUI.Label(new Rect(rect.x + 5, rect.y, rect.width - 10, 20), string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + XCoordinateName : settings.Title, EditorStyles.boldLabel);
+            var titleStyle = FPWorkbenchPlotView.LabelStyle(settings, settings.TitleFontSize, settings.TitleAlignment, true, settings.CustomTitleColor, settings.TitleColor);
+            var axisStyle = FPWorkbenchPlotView.LabelStyle(settings, settings.XLabelFontSize, settings.XLabelAlignment, false, settings.CustomXLabelColor, settings.XLabelColor);
+            var tickStyle = FPWorkbenchPlotView.LabelStyle(settings, 11, FPWorkbenchLabelAlignment.Left, false);
+            GUI.Label(new Rect(rect.x + 5, rect.y, rect.width - 10, Mathf.Max(25, settings.TitleFontSize + 4)), string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + XCoordinateName : settings.Title, titleStyle);
             try
             {
                 foreach (double tick in FPWorkbenchAxis.Ticks(b.MinimumX, b.MaximumX, settings.XScale, settings.XTickSpacing))
-                { float x = X(tick); if (settings.Grid) EditorGUI.DrawRect(new Rect(x, plot.y, 1, plot.height), new Color(1, 1, 1, .1f)); GUI.Label(new Rect(x - 20, plot.yMax + 2, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel); }
+                { float x = X(tick); if (settings.Grid) EditorGUI.DrawRect(new Rect(x, plot.y, 1, plot.height), settings.WhiteBackground ? new Color(0, 0, 0, .18f) : new Color(1, 1, 1, .1f)); GUI.Label(new Rect(x - 20, plot.yMax + 2, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), tickStyle); }
                 foreach (double tick in FPWorkbenchAxis.Ticks(b.MinimumY, b.MaximumY, settings.YScale, settings.YTickSpacing))
-                { float y = Y(tick); if (settings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(1, 1, 1, .1f)); GUI.Label(new Rect(rect.x + 3, y - 8, 72, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel); }
+                { float y = Y(tick); if (settings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), settings.WhiteBackground ? new Color(0, 0, 0, .18f) : new Color(1, 1, 1, .1f)); GUI.Label(new Rect(rect.x + 30, y - 8, 48, 18), tick.ToString("G5", CultureInfo.InvariantCulture), tickStyle); }
             }
             catch (ArgumentException ex) { GUI.Label(plot, ex.Message); }
-            GUI.Label(new Rect(plot.x, plot.yMax + 22, plot.width, 18), string.IsNullOrEmpty(settings.XLabel) ? XCoordinateName : settings.XLabel, EditorStyles.centeredGreyMiniLabel);
-            GUI.Label(new Rect(plot.x, plot.yMax + 40, plot.width, 18), string.IsNullOrEmpty(settings.YLabel) ? "Y: " + names[appliedY] : "Y: " + settings.YLabel, EditorStyles.miniLabel);
+            GUI.Label(new Rect(plot.x, plot.yMax + 22, plot.width, Mathf.Max(32, settings.XLabelFontSize + 4)), string.IsNullOrEmpty(settings.XLabel) ? XCoordinateName : settings.XLabel, axisStyle);
+            FPWorkbenchPlotView.DrawYLabel(string.IsNullOrEmpty(settings.YLabel) ? names[appliedY] : settings.YLabel, settings, rect.x + Mathf.Max(15, settings.YLabelFontSize / 2f + 3), plot.y, plot.height);
             if (Event.current.type == EventType.Repaint)
             {
                 GUI.BeginClip(plot);

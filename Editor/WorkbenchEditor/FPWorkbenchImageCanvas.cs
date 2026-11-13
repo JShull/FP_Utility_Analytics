@@ -19,6 +19,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private Mesh imageMesh;
         private Material imageMaterial;
         private int labels;
+        public Color BackgroundColor = new Color(.1f, .1f, .1f);
+        public Color TextColor = Color.white;
         public void Image(Texture2D source, Rect rect)
         {
             if (source == null || imageMesh != null) throw new ArgumentException("An image canvas accepts one source texture.");
@@ -50,14 +52,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             for (int i = 0; i < 4; i++) colors.Add(color);
             indices.AddRange(new[] { v, v + 1, v + 2, v, v + 2, v + 3 });
         }
-        public void Text(string value, float x, float y, TextAnchor anchor = TextAnchor.MiddleCenter, float angle = 0)
+        public void Text(string value, float x, float y, TextAnchor anchor = TextAnchor.MiddleCenter, float angle = 0, int fontSize = 12)
         {
             if (++labels > 512 || value != null && value.Length > 2048) throw new InvalidOperationException("Image label budget exceeded.");
             var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             var go = new GameObject("Workbench image label") { hideFlags = HideFlags.HideAndDontSave };
             preview.AddSingleGO(go);
-            var text = go.AddComponent<TextMesh>(); text.font = font; text.fontSize = 42; text.characterSize = 3.5f;
-            text.anchor = anchor; text.alignment = TextAlignment.Center; text.color = Color.white; text.text = value;
+            var text = go.AddComponent<TextMesh>(); text.font = font; text.fontSize = 42; text.characterSize = 3.5f * Mathf.Clamp(fontSize, 8, 64) / 12f;
+            text.anchor = anchor; text.alignment = TextAlignment.Center; text.color = TextColor; text.text = value;
             go.GetComponent<MeshRenderer>().sharedMaterial = font.material; go.transform.position = new Vector3(x, y, -1);
             go.transform.rotation = Quaternion.Euler(0, 0, angle);
         }
@@ -72,7 +74,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             preview.BeginStaticPreview(new Rect(0, 0, width, height)); var camera = preview.camera;
             camera.transform.SetPositionAndRotation(new Vector3(width / 2f, height / 2f, -10), Quaternion.identity);
             camera.orthographic = true; camera.orthographicSize = height / 2f; camera.nearClipPlane = .1f; camera.farClipPlane = 100;
-            camera.clearFlags = CameraClearFlags.Color; camera.backgroundColor = new Color(.1f, .1f, .1f);
+            camera.clearFlags = CameraClearFlags.Color; camera.backgroundColor = BackgroundColor;
             preview.DrawMesh(mesh, Matrix4x4.identity, material, 0); preview.Render(true); return preview.EndStaticPreview();
         }
         public void Dispose()

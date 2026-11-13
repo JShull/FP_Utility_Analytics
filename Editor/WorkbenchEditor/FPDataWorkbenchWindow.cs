@@ -276,6 +276,11 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                     else EditorGUILayout.HelpBox(sheet?.WaitingForLoad == true ? "Waiting for shared memory/background capacity…" : IsLoading(sheet) ? "Indexing/verifying source in the background…" : "Open Workbook Settings to import a CSV or open a workbook.", MessageType.Info);
                 }
             }
+            if (DragAndDrop.GetGenericData(ColumnDragKey) is FPWorkbenchColumnDragPayload && Event.current.type == EventType.DragUpdated)
+            {
+                DragAndDrop.visualMode = DragAndDropVisualMode.Generic;
+                Event.current.Use(); Repaint();
+            }
             Resize(new Rect(sidebar + 2, 0, 6, position.height), true, sidebarControl);
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
             EditorGUILayout.LabelField(status, EditorStyles.miniLabel);

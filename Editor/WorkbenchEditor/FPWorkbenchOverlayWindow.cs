@@ -52,6 +52,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private string error;
         [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
         [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigureDivider figureDivider = new FPWorkbenchFigureDivider();
         [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
         private bool pinnedReferencesReady;
         private bool Busy => opening != null || pendingOpening || building != null || pendingBuild != null || querying != null || waitingForMemory;
@@ -262,11 +263,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
             GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
             if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, appliedBinding?.Rows ?? binding.Rows, dataset.RowCount);
+            figureDivider ??= new FPWorkbenchFigureDivider();
+            int dividerControl = GUIUtility.GetControlID(731660, FocusType.Passive);
             using (new EditorGUILayout.HorizontalScope()) {
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(figureDivider.Width(position.width)))) {
                     figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
                     try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
                 }
+                figureDivider.Draw(this, dividerControl);
                 using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
             }
         }

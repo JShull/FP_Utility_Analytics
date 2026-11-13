@@ -63,7 +63,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var yMap = hasLeft ? new FPWorkbenchAxisMapping(min, max, settings.YScale) : null;
             var rightMap = dual && rightRange.HasValues ? new FPWorkbenchAxisMapping(rightRange.Minimum, rightRange.Maximum, axes.RightSettings.YScale) : null;
             int legendRows = legends == null ? 0 : (legends.Length + 1) / 2;
-            using var canvas = new FPWorkbenchImageCanvas(); Rect plot = new Rect(90, 80 + legendRows * 18, width - (dual ? 185 : 125), height - 145 - legendRows * 18);
+            using var canvas = new FPWorkbenchImageCanvas(); canvas.BackgroundColor = settings.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f); canvas.TextColor = settings.WhiteBackground ? Color.black : Color.white; Rect plot = new Rect(90, 80 + legendRows * 18, width - (dual ? 185 : 125), height - 145 - legendRows * 18);
             float interestBand = interests?.BandWidth(width, height, interestKey) ?? 0; plot.width -= interestBand;
             float X(double v) => plot.x + (float)xMap.Fraction(Math.Max(view.StartX, Math.Min(view.EndX, v))) * plot.width;
             float Y(double v) { double f = yMap.Fraction(Math.Max(min, Math.Min(max, v))); return plot.y + (float)(settings.InvertY ? 1 - f : f) * plot.height; }
@@ -86,9 +86,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
                 canvas.Text(axes.RightSettings.YLabel, width - interestBand - 16, plot.center.y, angle: 90);
             }
-            canvas.Text(string.IsNullOrEmpty(settings.Title) ? label : settings.Title, width / 2f, height - 22);
-            canvas.Text(settings.YLabel, 16, plot.center.y, angle: 90);
-            canvas.Text(settings.XLabel, plot.center.x, legendRows * 18 + 38);
+            float LabelPosition(FPWorkbenchLabelAlignment a, float min, float max) => a == FPWorkbenchLabelAlignment.Left ? min : a == FPWorkbenchLabelAlignment.Right ? max : (min + max) / 2;
+            TextAnchor LabelAnchor(FPWorkbenchLabelAlignment a) => a == FPWorkbenchLabelAlignment.Left ? TextAnchor.MiddleLeft : a == FPWorkbenchLabelAlignment.Right ? TextAnchor.MiddleRight : TextAnchor.MiddleCenter;
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(settings, settings.CustomTitleColor, settings.TitleColor);
+            canvas.Text(string.IsNullOrEmpty(settings.Title) ? label : settings.Title, LabelPosition(settings.TitleAlignment, 10, width - 10), height - Mathf.Max(22, settings.TitleFontSize / 2f + 4), LabelAnchor(settings.TitleAlignment), fontSize: settings.TitleFontSize);
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(settings, settings.CustomYLabelColor, settings.YLabelColor);
+            FPWorkbenchPlotView.ExportYLabel(canvas, settings.YLabel, settings, Mathf.Max(16, settings.YLabelFontSize / 2f + 3), plot.y, plot.yMax);
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(settings, settings.CustomXLabelColor, settings.XLabelColor);
+            canvas.Text(settings.XLabel, LabelPosition(settings.XLabelAlignment, plot.x, plot.xMax), legendRows * 18 + 38, LabelAnchor(settings.XLabelAlignment), fontSize: settings.XLabelFontSize);
+            canvas.TextColor = settings.WhiteBackground ? Color.black : Color.white;
             aggregated = false; logOmitted = 0; bool continuous = false; FPWorkbenchSeriesBin previous = default;
             for (int seriesIndex = 0; seriesIndex < (overlay?.Series.Count ?? 1); seriesIndex++) {
             var current = overlay == null ? view : overlay.Series[seriesIndex];

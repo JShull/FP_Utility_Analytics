@@ -34,6 +34,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 DragAndDrop.SetGenericData(ColumnDragKey, new FPWorkbenchColumnDragPayload { Workbook = workbookId,
                     Dataset = data.DatasetId, Column = current, ColumnId = dragStableColumn, DerivedId = dragDerivedId,
                     FormulaFingerprint = derived ? dragColumnSheet.TableProgram.Fingerprint : null });
+                DragAndDrop.visualMode = DragAndDropVisualMode.Generic;
                 DragAndDrop.StartDrag(derived ? dragColumnSheet.Table.ColumnName(current) : data.GetColumnName(current));
                 GUIUtility.hotControl = 0; dragColumnSheet = null; dragColumn = -1; e.Use();
             }
@@ -42,6 +43,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private void ColumnDragHeader(Sheet sheet, int column, Rect rect)
         {
+            EditorGUIUtility.AddCursorRect(rect, MouseCursor.Pan);
             var e = Event.current;
             if (e.type != EventType.MouseDown || e.button != 0 || !rect.Contains(e.mousePosition) || GUIUtility.hotControl != 0) return;
             dragColumnSheet = sheet; dragColumn = column; dragColumnStart = e.mousePosition;
@@ -84,22 +86,36 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             var sheet = sheets.Find(s => s.Id == sheetId); if (sheet?.Dataset != null) DrawColumnDropTargets(sheet, rect);
         }
+        private static void DrawColumnDropTarget(Rect rect, string label, bool hovered)
+        {
+            EditorGUI.DrawRect(rect, hovered ? new Color(0.15f, 0.58f, 0.85f, 0.70f) : new Color(0.10f, 0.35f, 0.52f, 0.58f));
+            var border = hovered ? new Color(0.55f, 0.85f, 1f, 0.95f) : new Color(0.35f, 0.70f, 0.92f, 0.85f);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, 2), border);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - 2, rect.width, 2), border);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, 2, rect.height), border);
+            EditorGUI.DrawRect(new Rect(rect.xMax - 2, rect.y, 2, rect.height), border);
+            GUI.Label(rect, label, EditorStyles.centeredGreyMiniLabel);
+        }
         private void DrawColumnDropTargets(Sheet sheet, Rect plot)
         {
             if (!(DragAndDrop.GetGenericData(ColumnDragKey) is FPWorkbenchColumnDragPayload payload)) return;
             var e = Event.current;
             if (e.type != EventType.DragUpdated && e.type != EventType.DragPerform && e.type != EventType.Repaint) return;
             if (!plot.Contains(e.mousePosition)) return;
-            Rect x = new Rect(plot.x + 8, plot.y + 30, Math.Max(40, (plot.width - 24) / 2), 30);
+            Rect x = new Rect(plot.x + 12, plot.y + 30, Math.Max(40, (plot.width - 32) / 2), 48);
             Rect y = new Rect(x.xMax + 8, x.y, x.width, x.height);
-            GUI.Box(x, "Assign numeric X"); GUI.Box(y, "Assign Y");
-            if (e.type == EventType.Repaint) return;
+            bool hitX = x.Contains(e.mousePosition), hitY = y.Contains(e.mousePosition);
+            if (e.type == EventType.Repaint)
+            {
+                DrawColumnDropTarget(x, "Drop column for X", hitX);
+                DrawColumnDropTarget(y, "Drop column for Y", hitY);
+                return;
+            }
             bool derived = !string.IsNullOrEmpty(payload.DerivedId);
             bool accepted = payload.Workbook == workbookId && payload.Dataset == sheet.Dataset.DatasetId && (derived
                 ? DerivedDropColumn(sheet, payload.ColumnId, payload.DerivedId) >= 0
                 : payload.Column >= 0 && payload.Column < sheet.Dataset.ColumnCount && payload.ColumnId == sheet.Dataset.Cell(0, payload.Column).ColumnId);
-            bool hitX = x.Contains(e.mousePosition), hitY = y.Contains(e.mousePosition);
-            DragAndDrop.visualMode = accepted && (hitX || hitY) ? DragAndDropVisualMode.Link : DragAndDropVisualMode.Rejected;
+            DragAndDrop.visualMode = accepted ? DragAndDropVisualMode.Generic : DragAndDropVisualMode.Rejected;
             if (e.type == EventType.DragPerform)
             {
                 if (accepted && (hitX || hitY))

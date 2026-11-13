@@ -72,6 +72,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string Format = "FuzzPhyte.DataWorkbench.PlotPreset";
         public int Version = 1;
         public string Title = "", XLabel = "", YLabel = "";
+        public int TitleFontSize = 12, XLabelFontSize = 11, YLabelFontSize = 11;
+        public FPWorkbenchLabelAlignment TitleAlignment = FPWorkbenchLabelAlignment.Left, XLabelAlignment = FPWorkbenchLabelAlignment.Center, YLabelAlignment = FPWorkbenchLabelAlignment.Center;
+        public FPWorkbenchYLabelDirection YLabelDirection;
+        public float StackedYCharacterSpacing;
+        public bool WhiteBackground;
+        public bool CustomTitleColor, CustomXLabelColor, CustomYLabelColor;
+        public UnityEngine.Color TitleColor = UnityEngine.Color.white, XLabelColor = UnityEngine.Color.white, YLabelColor = UnityEngine.Color.white;
         public FPWorkbenchAxisScale XScale, YScale;
         public FPWorkbenchPlotStyle Style;
         public float LineWidth = 1, MarkerSize = 3;
@@ -83,12 +90,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (s == null) throw new ArgumentNullException(nameof(s));
             var p = new FPWorkbenchPlotPreset { XScale = s.XScale, YScale = s.YScale, Title = s.Title, XLabel = s.XLabel, YLabel = s.YLabel, Style = s.Style,
                 LineWidth = s.LineWidth, MarkerSize = s.MarkerSize, Grid = s.Grid, InvertY = s.InvertY,
-                XTickSpacing = s.XTickSpacing, YTickSpacing = s.YTickSpacing }; p.Validate(); return p;
+                XTickSpacing = s.XTickSpacing, YTickSpacing = s.YTickSpacing, TitleFontSize = s.TitleFontSize, XLabelFontSize = s.XLabelFontSize, YLabelFontSize = s.YLabelFontSize, TitleAlignment = s.TitleAlignment, XLabelAlignment = s.XLabelAlignment, YLabelAlignment = s.YLabelAlignment, YLabelDirection = s.YLabelDirection, StackedYCharacterSpacing = s.StackedYCharacterSpacing, WhiteBackground = s.WhiteBackground, CustomTitleColor = s.CustomTitleColor, CustomXLabelColor = s.CustomXLabelColor, CustomYLabelColor = s.CustomYLabelColor, TitleColor = s.TitleColor, XLabelColor = s.XLabelColor, YLabelColor = s.YLabelColor }; p.Validate(); return p;
         }
         public void Validate()
         {
             if (Format != "FuzzPhyte.DataWorkbench.PlotPreset" || Version != 1 || Title == null || XLabel == null || YLabel == null ||
                 !Enum.IsDefined(typeof(FPWorkbenchAxisScale), XScale) || !Enum.IsDefined(typeof(FPWorkbenchAxisScale), YScale) || Title.Length > 512 || XLabel.Length > 512 || YLabel.Length > 512 || !Enum.IsDefined(typeof(FPWorkbenchPlotStyle), Style) ||
+                !FPWorkbenchSeriesBinding.Finite(StackedYCharacterSpacing) || StackedYCharacterSpacing < 0 || StackedYCharacterSpacing > 20 ||
                 !FPWorkbenchSeriesBinding.Finite(LineWidth) || LineWidth < 1 || LineWidth > 8 || !FPWorkbenchSeriesBinding.Finite(MarkerSize) || MarkerSize < 1 || MarkerSize > 16 ||
                 !FPWorkbenchSeriesBinding.Finite(XTickSpacing) || XTickSpacing < 0 || !FPWorkbenchSeriesBinding.Finite(YTickSpacing) || YTickSpacing < 0)
                 throw new InvalidDataException("Invalid or unsupported plot presentation preset.");
@@ -99,6 +107,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             if (XScale == FPWorkbenchAxisScale.Log10 && s.HasRange) FPWorkbenchAxis.Validate(s.StartX, s.EndX, XScale);
             if (YScale == FPWorkbenchAxisScale.Log10 && s.LockY) FPWorkbenchAxis.Validate(s.MinimumY, s.MaximumY, YScale);
             s.XScale = XScale; s.YScale = YScale; s.Title = Title; s.XLabel = XLabel; s.YLabel = YLabel; s.Style = Style; s.LineWidth = LineWidth;
+            s.TitleFontSize = TitleFontSize; s.XLabelFontSize = XLabelFontSize; s.YLabelFontSize = YLabelFontSize;
+            s.TitleAlignment = TitleAlignment; s.XLabelAlignment = XLabelAlignment; s.YLabelAlignment = YLabelAlignment; s.YLabelDirection = YLabelDirection; s.StackedYCharacterSpacing = StackedYCharacterSpacing; s.WhiteBackground = WhiteBackground;
+            s.CustomTitleColor = CustomTitleColor; s.CustomXLabelColor = CustomXLabelColor; s.CustomYLabelColor = CustomYLabelColor; s.TitleColor = TitleColor; s.XLabelColor = XLabelColor; s.YLabelColor = YLabelColor;
             s.MarkerSize = MarkerSize; s.Grid = Grid; s.InvertY = InvertY; s.XTickSpacing = XTickSpacing; s.YTickSpacing = YTickSpacing;
         }
         /// <summary>Apply only Y-axis presentation, retaining limits, locks and all shared-X/series controls.</summary>

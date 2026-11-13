@@ -29,10 +29,26 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 var deadline = DateTime.UtcNow.AddSeconds(10);
                 while ((View(window) == null || Busy(window)) && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(View(window), Is.Not.Null); Assert.That(View(window).MatchingCount, Is.EqualTo(4));
+                window.Repaint(); yield return null; yield return null;
+                var divider = type.GetField("figureDivider", flags).GetValue(window);
+                var dividerType = divider.GetType(); var widthField = dividerType.GetField("width", flags);
+                var dividerRect = (Rect)dividerType.GetField("lastRect", flags).GetValue(divider);
+                var point = dividerRect.center + window.rootVisualElement.worldBound.position;
+                window.SendEvent(new Event { type = EventType.MouseDown, button = 0, mousePosition = point });
+                window.SendEvent(new Event { type = EventType.MouseDrag, button = 0, mousePosition = point + new Vector2(100, 0), delta = new Vector2(100, 0) });
+                window.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = point + new Vector2(100, 0) });
+                Assert.That((float)widthField.GetValue(divider), Is.EqualTo(460).Within(2), "Dragging the divider should widen settings.");
                 Assert.That(View(window).Points[0].X, Is.EqualTo(2)); Assert.That(View(window).Points[1].X, Is.Zero);
                 type.GetField("maximumPoints", flags).SetValue(window, 2); window.Repaint(); yield return null;
                 while ((View(window).Points.Count != 2 || Busy(window)) && DateTime.UtcNow < deadline) yield return null;
                 Assert.That(View(window).Decimated, Is.True); Assert.That(View(window).MatchingCount, Is.EqualTo(4));
+                var presentation = (FPWorkbenchPlotSettings)type.GetField("settings", flags).GetValue(window);
+                presentation.WhiteBackground = true; presentation.CustomTitleColor = true; presentation.TitleColor = Color.red; presentation.Title = "CUSTOM TITLE"; presentation.TitleFontSize = 18; presentation.TitleAlignment = FPWorkbenchLabelAlignment.Right;
+                presentation.YLabelDirection = FPWorkbenchYLabelDirection.TopToBottom; presentation.YLabelFontSize = 16;
+                var preset = FPWorkbenchPlotPreset.Parse(FPWorkbenchPlotPreset.Capture(presentation).ToJson());
+                var restoredPresentation = new FPWorkbenchPlotSettings(); preset.Apply(restoredPresentation);
+                Assert.That(restoredPresentation.WhiteBackground, Is.True); Assert.That(restoredPresentation.CustomTitleColor, Is.True); Assert.That(restoredPresentation.TitleColor, Is.EqualTo(Color.red)); Assert.That(restoredPresentation.TitleFontSize, Is.EqualTo(18));
+                Assert.That(restoredPresentation.TitleAlignment, Is.EqualTo(FPWorkbenchLabelAlignment.Right)); Assert.That(restoredPresentation.YLabelDirection, Is.EqualTo(FPWorkbenchYLabelDirection.TopToBottom));
                 var published = View(window); string imageOutput = Path.Combine(root, "scatter.fpfigure");
                 type.GetField("invalidPolicy", flags).SetValue(window, FPWorkbenchInvalidPolicy.Skip);
                 var pngWork0 = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)type.GetMethod("ExportPng", flags).Invoke(window, new object[] { imageOutput, 640, 480 });
@@ -42,7 +58,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 try {
                     Assert.That(image.LoadImage(File.ReadAllBytes(Path.Combine(imageOutput, "figure.png"))), Is.True);
                     Assert.That(image.width, Is.EqualTo(640)); Assert.That(image.height, Is.EqualTo(480));
-                    int colored = 0; foreach (var pixel in image.GetPixels32()) if (pixel.b > pixel.r + 30 && pixel.g > pixel.r + 30) colored++;
+                    var background = image.GetPixel(639, 0); Assert.That(background.r, Is.GreaterThan(.9f)); Assert.That(background.g, Is.GreaterThan(.9f));
+                    int colored = 0, red = 0; foreach (var pixel in image.GetPixels32()) { if (pixel.b > pixel.r + 30 && pixel.g > pixel.r + 30) colored++; if (pixel.r > 180 && pixel.g < 100 && pixel.b < 100) red++; }
+                    Assert.That(red, Is.GreaterThan(2), "Custom title color must appear in the exported image.");
                     Assert.That(colored, Is.GreaterThan(2));
                 } finally { UnityEngine.Object.DestroyImmediate(image); }
                 var metadata = JsonUtility.FromJson(File.ReadAllText(Path.Combine(imageOutput, "provenance.json")), type.GetNestedType("ScatterImageProvenance", BindingFlags.NonPublic));

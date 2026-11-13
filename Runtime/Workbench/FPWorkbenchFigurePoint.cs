@@ -16,6 +16,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         public string Label = "Point", AxisKey = "", Details = "";
         public double X, Y, Z;
         public bool HasZ;
+        // Inverted flags preserve the behavior of figures saved before these options existed.
+        public bool ExcludeFromExport, HideExportValues, HideExportRow;
+        // Zero retains legacy automatic precision; 1..10 mean 0..9 decimal places.
+        public int ExportDecimalPlacesPlusOne;
+        public bool UseExportColor, ExportLabelAtPoint;
+        public UnityEngine.Color ExportColor = UnityEngine.Color.yellow;
         public int Series;
         public FPWorkbenchFigurePointReference[] References = Array.Empty<FPWorkbenchFigurePointReference>();
         public FPWorkbenchFigurePoint Copy() => UnityEngine.JsonUtility.FromJson<FPWorkbenchFigurePoint>(UnityEngine.JsonUtility.ToJson(this));
@@ -25,6 +31,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
             foreach (var point in points) {
                 if (point == null || point.Label == null || point.Label.Length > 128 || point.AxisKey == null || point.AxisKey.Length > 4096 ||
                     point.Details == null || point.Details.Length > 512 || !Finite(point.X) || !Finite(point.Y) || !Finite(point.Z) || point.Series < 0 || point.Series > 7 ||
+                    point.ExportDecimalPlacesPlusOne < 0 || point.ExportDecimalPlacesPlusOne > 10 ||
+                    !Finite(point.ExportColor.r) || !Finite(point.ExportColor.g) || !Finite(point.ExportColor.b) || !Finite(point.ExportColor.a) ||
                     point.References == null || point.References.Length > 2) throw new InvalidDataException("Invalid figure point of interest.");
                 foreach (var r in point.References) if (r == null || string.IsNullOrEmpty(r.DatasetId) || r.DatasetId.Length > 256 || r.SheetId == null || r.SheetId.Length > 128 ||
                     r.Row < 0 || r.PrimaryColumn == null || r.PrimaryColumn.Length > 512 || r.Columns == null || r.Columns.Length > 4096 ||

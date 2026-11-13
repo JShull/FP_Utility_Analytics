@@ -149,6 +149,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 Assert.That(type.GetField("error", flags).GetValue(window), Is.Not.Null); Assert.That(Result(window), Is.SameAs(result));
                 var descriptor = (FPWorkbenchFigureDocument)type.GetMethod("DescribeFigure", flags).Invoke(window, null);
                 Assert.That(descriptor.HistogramBins, Is.EqualTo(2)); Assert.That(descriptor.Maximum, Is.EqualTo(9)); descriptor.Validate();
+                var presentation = (FPWorkbenchPlotSettings)type.GetField("presentation", flags).GetValue(window);
+                presentation.WhiteBackground = true; presentation.Title = "HISTOGRAM TITLE"; presentation.CustomTitleColor = true; presentation.TitleColor = Color.red;
+                Assert.That(((FPWorkbenchFigureDocument)type.GetMethod("DescribeFigure", flags).Invoke(window, null)).Plot.CustomTitleColor, Is.True);
                 string output = Path.Combine(root, "histogram.fpfigure");
                 var pngWork0 = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)type.GetMethod("ExportPng", flags).Invoke(window, new object[] { output, 640, 480 });
                 while (!pngWork0.IsCompleted) yield return null; pngWork0.GetAwaiter().GetResult();
@@ -157,12 +160,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 try {
                     Assert.That(image.LoadImage(File.ReadAllBytes(Path.Combine(output, "figure.png"))), Is.True);
                     Assert.That(image.width, Is.EqualTo(640)); Assert.That(image.height, Is.EqualTo(480));
-                    int bars = 0, labels = 0;
+                    Assert.That(image.GetPixel(0, 0).r, Is.GreaterThan(.9f));
+                    int bars = 0, labels = 0, red = 0;
                     foreach (var pixel in image.GetPixels32()) {
                         if (pixel.b > pixel.r + 30 && pixel.g > pixel.r + 30) bars++;
                         if (pixel.r > 180 && pixel.g > 180 && pixel.b > 180) labels++;
+                        if (pixel.r > 180 && pixel.g < 100 && pixel.b < 100) red++;
                     }
-                    Assert.That(bars, Is.GreaterThan(100)); Assert.That(labels, Is.GreaterThan(20), "Export must include rendered axis labels.");
+                    Assert.That(red, Is.GreaterThan(2)); Assert.That(bars, Is.GreaterThan(100)); Assert.That(labels, Is.GreaterThan(20), "Export must include rendered axis labels.");
                 } finally { UnityEngine.Object.DestroyImmediate(image); }
                 var metadata = JsonUtility.FromJson(File.ReadAllText(Path.Combine(output, "provenance.json")), type.GetNestedType("HistogramImageProvenance", BindingFlags.NonPublic));
                 Assert.That(metadata.GetType().GetField("Counts").GetValue(metadata), Is.EqualTo(new long[] { result.Counts[0], result.Counts[1] }));

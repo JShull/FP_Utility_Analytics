@@ -51,26 +51,69 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 figure.Repaint(); yield return null; yield return null; Pick(figure, 1); yield return null;
                 point = (FPWorkbenchFigurePoint)Call(figure, "CaptureInterest"); store.GetType().GetMethod("Add", Flags).Invoke(store, new object[] { point, "Second point", key });
                 Assert.That(Points(store).Count, Is.EqualTo(2));
+                Points(store)[0].HideExportValues = true; Points(store)[0].UseExportColor = true; Points(store)[0].ExportColor = Color.magenta; Points(store)[0].ExportDecimalPlacesPlusOne = 3; Points(store)[0].ExportLabelAtPoint = false; Points(store)[1].ExcludeFromExport = true;
                 string output = Path.Combine(root, "Annotated.fpfigure");
                 var export = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)Call(figure, "ExportPng", output, 640, 480);
                 while (!export.IsCompleted) yield return null; export.GetAwaiter().GetResult();
                 File.Copy(Path.Combine(output, "figure.png"), Path.Combine(Path.GetTempPath(), "FPWorkbench-POI-preview.png"), true);
                 var metadata = JsonUtility.FromJson(File.ReadAllText(Path.Combine(output, "provenance.json")), figure.GetType().GetNestedType("ScatterImageProvenance", BindingFlags.NonPublic));
                 var saved = (FPWorkbenchFigureDocument)metadata.GetType().GetField("Figure").GetValue(metadata);
-                Assert.That(saved.SourceSheetName, Is.EqualTo("Timed depth")); Assert.That(saved.Binding.XMode, Is.EqualTo(FPWorkbenchXMode.UtcDateTime)); Assert.That(saved.PointsOfInterest.Count, Is.EqualTo(2));
+                Assert.That(saved.SourceSheetName, Is.EqualTo("Timed depth")); Assert.That(saved.Binding.XMode, Is.EqualTo(FPWorkbenchXMode.UtcDateTime)); Assert.That(saved.PointsOfInterest.Count, Is.EqualTo(2)); Assert.That(saved.PointsOfInterest[0].HideExportValues, Is.True); Assert.That(saved.PointsOfInterest[1].ExcludeFromExport, Is.True); Assert.That(saved.PointsOfInterest[0].ExportDecimalPlacesPlusOne, Is.EqualTo(3)); Assert.That(saved.PointsOfInterest[0].ExportColor, Is.EqualTo(Color.magenta)); Assert.That(saved.PointsOfInterest[0].ExportLabelAtPoint, Is.False);
                 var image = new Texture2D(2, 2);
                 try { Assert.That(image.LoadImage(File.ReadAllBytes(Path.Combine(output, "figure.png"))), Is.True); Assert.That(image.width, Is.EqualTo(640));
                     int white = 0; var pixels = image.GetPixels32(); for (int y = 120; y < 440; y++) for (int x = 465; x < 638; x++) { var c = pixels[y * 640 + x]; if (c.r > 180 && c.g > 180 && c.b > 180) white++; }
                     Assert.That(white, Is.GreaterThan(60), "The reserved callout band must contain readable data labels.");
                 } finally { UnityEngine.Object.DestroyImmediate(image); }
+                Points(store)[0].ExportLabelAtPoint = true;
+                string inlineOutput = Path.Combine(root, "Inline.fpfigure");
+                var inlineExport = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)Call(figure, "ExportPng", inlineOutput, 640, 480);
+                while (!inlineExport.IsCompleted) yield return null; inlineExport.GetAwaiter().GetResult();
+                var inlineImage = new Texture2D(2, 2);
+                try {
+                    Assert.That(inlineImage.LoadImage(File.ReadAllBytes(Path.Combine(inlineOutput, "figure.png"))), Is.True);
+                    int magenta = 0; foreach (var c in inlineImage.GetPixels32()) if (c.r > 180 && c.b > 180 && c.g < 100) magenta++;
+                    Assert.That(magenta, Is.GreaterThan(5), "Inline point marker must use its chosen color.");
+                } finally { UnityEngine.Object.DestroyImmediate(inlineImage); }
                 var snapshot = (FPWorkbenchDocument)Call(owner, "CaptureWorkbook"); string path = Path.Combine(root, "Pinned.fpworkbook");
                 var save = FPWorkbenchDocumentFile.SaveAsync(snapshot, path); while (!save.IsCompleted) yield return null; save.GetAwaiter().GetResult();
                 var load = FPWorkbenchDocumentFile.LoadAsync(path); while (!load.IsCompleted) yield return null;
                 using (var loaded = load.GetAwaiter().GetResult()) {
-                    var recipe = loaded.Document.Figures.Find(f => f.Id == saved.Id); Assert.That(recipe, Is.Not.Null); Assert.That(recipe.PointsOfInterest.Count, Is.EqualTo(2)); Assert.That(recipe.SourceSheetName, Is.EqualTo("Timed depth"));
+                    var recipe = loaded.Document.Figures.Find(f => f.Id == saved.Id); Assert.That(recipe, Is.Not.Null); Assert.That(recipe.PointsOfInterest.Count, Is.EqualTo(2)); Assert.That(recipe.PointsOfInterest[0].HideExportValues, Is.True); Assert.That(recipe.PointsOfInterest[0].ExportLabelAtPoint, Is.True); Assert.That(recipe.PointsOfInterest[0].ExportDecimalPlacesPlusOne, Is.EqualTo(3)); Assert.That(recipe.PointsOfInterest[1].ExcludeFromExport, Is.True); Assert.That(recipe.SourceSheetName, Is.EqualTo("Timed depth"));
                 }
                 Call(owner, "CloseCurrentSheet"); Assert.That(((FPWorkbenchFigureDocument)Call(figure, "DescribeFigure")).SourceSheetName, Is.EqualTo("Timed depth"));
             } finally { if (figure != null) figure.Close(); owner.Close(); Directory.Delete(root, true); }
+        }
+        [Test] public void ExportOptionsFilterPointsAndSuppressValues()
+        {
+            var type = typeof(FPWorkbenchScatterWindow).Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchFigurePoints");
+            var store = Activator.CreateInstance(type, true);
+            try {
+                var points = Points(store);
+                points.Add(new FPWorkbenchFigurePoint { Label = "First", AxisKey = "axes", X = 1.23456789123, Y = 2, Details = "Source sample", References = new[] { new FPWorkbenchFigurePointReference { DatasetId = "fixture", Row = 41 } } });
+                points.Add(new FPWorkbenchFigurePoint { Label = "Second", AxisKey = "axes", ExcludeFromExport = true });
+                var callout = type.GetMethod("Callout", BindingFlags.Static | BindingFlags.NonPublic);
+                string full = (string)callout.Invoke(null, new object[] { points[0], 1, 30 });
+                Assert.That(full, Does.Contain("1.23456789")); Assert.That(full, Does.Contain("Row: 42")); Assert.That(full, Does.Not.Contain("Source sample"));
+                points[0].HideExportRow = true;
+                Assert.That((string)callout.Invoke(null, new object[] { points[0], 1, 30 }), Does.Not.Contain("Row:"));
+                Assert.That(points[0].Copy().HideExportRow, Is.True);
+                points[0].ExportDecimalPlacesPlusOne = 1;
+                Assert.That((string)callout.Invoke(null, new object[] { points[0], 1, 30 }), Does.Contain("X: 1\n"));
+                points[0].ExportDecimalPlacesPlusOne = 4;
+                Assert.That((string)callout.Invoke(null, new object[] { points[0], 1, 30 }), Does.Contain("X: 1.235"));
+                points[0].ExportLabelAtPoint = true;
+                var bandMethod = type.GetMethod("BandWidth", Flags);
+                Assert.That((float)bandMethod.Invoke(store, new object[] { 640, 480, "axes" }), Is.Zero);
+                points[0].ExportLabelAtPoint = false;
+                points[0].HideExportValues = true;
+                string label = (string)callout.Invoke(null, new object[] { points[0], 1, 30 });
+                Assert.That(label, Is.EqualTo("1. First"));
+                var band = type.GetMethod("BandWidth", Flags);
+                Assert.That((float)band.Invoke(store, new object[] { 640, 480, "axes" }), Is.GreaterThan(0));
+                points[0].ExcludeFromExport = true;
+                Assert.That((float)band.Invoke(store, new object[] { 640, 480, "axes" }), Is.Zero);
+                var copy = points[0].Copy(); Assert.That(copy.HideExportValues && copy.ExcludeFromExport, Is.True);
+            } finally { ((IDisposable)store).Dispose(); }
         }
         [Test] public void InvalidAnnotationsAreRejectedBeforeSaving()
         {

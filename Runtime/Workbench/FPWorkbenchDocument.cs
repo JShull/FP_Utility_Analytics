@@ -87,7 +87,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench
         internal static void ValidatePlot(FPWorkbenchPlotSettings p)
         {
             if (p == null || !Enum.IsDefined(typeof(FPWorkbenchAxisScale), p.XScale) || !Enum.IsDefined(typeof(FPWorkbenchAxisScale), p.YScale) || !Enum.IsDefined(typeof(FPWorkbenchPlotStyle), p.Style) || !Finite(p.LineWidth) || p.LineWidth < 1 || p.LineWidth > 8 || !Finite(p.MarkerSize) || p.MarkerSize < 1 || p.MarkerSize > 16 || !Finite(p.StartX) || !Finite(p.EndX) || p.EndX <= p.StartX || !Finite(p.MinimumY) || !Finite(p.MaximumY) || p.MaximumY < p.MinimumY ||
-                !Finite(p.XTickSpacing) || !Finite(p.YTickSpacing) || p.XTickSpacing < 0 || p.YTickSpacing < 0 || p.Title == null || p.Title.Length > 4096 ||
+                !Finite(p.StackedYCharacterSpacing) || p.StackedYCharacterSpacing < 0 || p.StackedYCharacterSpacing > 20 || !Finite(p.XTickSpacing) || !Finite(p.YTickSpacing) || p.XTickSpacing < 0 || p.YTickSpacing < 0 || p.Title == null || p.Title.Length > 4096 ||
                 p.XLabel == null || p.XLabel.Length > 4096 || p.YLabel == null || p.YLabel.Length > 4096) throw new InvalidDataException("Invalid plot range, grid spacing or labels.");
             if (p.XScale == FPWorkbenchAxisScale.Log10 && p.HasRange && p.StartX <= 0 || p.YScale == FPWorkbenchAxisScale.Log10 && p.LockY && p.MinimumY <= 0)
                 throw new InvalidDataException("Logarithmic plot limits must be positive.");

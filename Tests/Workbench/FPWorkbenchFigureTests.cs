@@ -31,6 +31,33 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                     return mask;
                 } finally { UnityEngine.Object.DestroyImmediate(image); }
             }
+            var plotView = typeof(FPWorkbenchFigureWindow).Assembly.GetType("FuzzPhyte.Utility.Analytics.WorkBench.Editor.FPWorkbenchPlotView");
+            var stack = plotView.GetMethod("StackLabel", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.That(stack.Invoke(null, new object[] { "Aé B" }), Is.EqualTo("A\né\n \nB"));
+            settings.YLabel = "DEPTH"; settings.YLabelDirection = FPWorkbenchYLabelDirection.StackedTopToBottom;
+            settings.StackedYCharacterSpacing = 12;
+            var roundTrip = FPWorkbenchPlotPreset.Parse(FPWorkbenchPlotPreset.Capture(settings).ToJson());
+            Assert.That(roundTrip.YLabelDirection, Is.EqualTo(FPWorkbenchYLabelDirection.StackedTopToBottom)); Assert.That(roundTrip.StackedYCharacterSpacing, Is.EqualTo(12));
+            settings.WhiteBackground = true; settings.Title = "RED TITLE"; settings.CustomTitleColor = true; settings.TitleColor = Color.red;
+            object[] whiteArguments = { view, settings, "Fixture", 640, 480, false, 0 };
+            var whiteImage = (Texture2D)render.Invoke(null, whiteArguments);
+            try { Assert.That(whiteImage.GetPixel(0, 0).r, Is.GreaterThan(.9f)); int labelInk = 0; for (int y = 80; y < 400; y++) for (int x = 0; x < 35; x++) { var c = whiteImage.GetPixel(x, y); if (c.r < .3f && c.g < .3f && c.b < .3f) labelInk++; } Assert.That(labelInk, Is.GreaterThan(5), "Stacked Y label should render along the left edge."); int red = 0; foreach (var pixel in whiteImage.GetPixels32()) if (pixel.r > 180 && pixel.g < 100 && pixel.b < 100) red++; Assert.That(red, Is.GreaterThan(2)); }
+            finally { UnityEngine.Object.DestroyImmediate(whiteImage); }
+            int LabelSpan(float spacing) {
+                settings.StackedYCharacterSpacing = spacing;
+                var image = (Texture2D)render.Invoke(null, new object[] { view, settings, "Fixture", 640, 480, false, 0 });
+                try { int low = 480, high = -1; for (int y = 80; y < 400; y++) for (int x = 0; x < 35; x++) { var c = image.GetPixel(x, y); if (c.r < .3f && c.g < .3f && c.b < .3f) { low = Math.Min(low, y); high = Math.Max(high, y); } } return high - low; }
+                finally { UnityEngine.Object.DestroyImmediate(image); }
+            }
+            Assert.That(LabelSpan(12), Is.GreaterThan(LabelSpan(0) + 35), "Character spacing must visibly expand the exported stacked label.");
+            int RedTitlePixels(int size) {
+                settings.TitleFontSize = size;
+                var image = (Texture2D)render.Invoke(null, new object[] { view, settings, "Fixture", 640, 480, false, 0 });
+                try { int count = 0; foreach (var c in image.GetPixels32()) if (c.r > 180 && c.g < 100 && c.b < 100) count++; return count; }
+                finally { UnityEngine.Object.DestroyImmediate(image); }
+            }
+            Assert.That(RedTitlePixels(64), Is.GreaterThan(RedTitlePixels(20) * 2), "Font sizes above 32 must render larger in exports.");
+            settings.TitleFontSize = 12; settings.WhiteBackground = false; settings.CustomTitleColor = false;
             var line = Pixels(FPWorkbenchPlotStyle.Line); var step = Pixels(FPWorkbenchPlotStyle.Step); var points = Pixels(FPWorkbenchPlotStyle.Points);
             int Count(bool[] pixels) => Array.FindAll(pixels, p => p).Length;
             Assert.That(Count(line), Is.GreaterThan(Count(points) + 100));

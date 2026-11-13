@@ -101,6 +101,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 Assert.That(descriptor.Spatial.ShowXAxis, Is.False); Assert.That(descriptor.Spatial.ShowYAxis, Is.True);
                 Assert.That(descriptor.Spatial.ShowZAxis, Is.False); Assert.That(descriptor.Spatial.ShowOrigin, Is.True);
                 type.GetField("showAxisValues", flags).SetValue(window, true);
+                var presentation = (FPWorkbenchPlotSettings)type.GetField("presentation", flags).GetValue(window);
+                presentation.WhiteBackground = true; presentation.CustomTitleColor = true; presentation.TitleColor = Color.red; presentation.Title = "3D TITLE";
                 string imageOutput = Path.Combine(root, "points.fpfigure");
                 var cameraPosition = preview.camera.transform.position; var activeTexture = RenderTexture.active;
                 var pngWork0 = (System.Threading.Tasks.Task<FPWorkbenchImageExportResult>)type.GetMethod("ExportPng", flags).Invoke(window, new object[] { imageOutput, 640, 480 });
@@ -111,6 +113,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Tests
                 try {
                     Assert.That(exportedImage.LoadImage(File.ReadAllBytes(Path.Combine(imageOutput, "figure.png"))), Is.True);
                     Assert.That(exportedImage.width, Is.EqualTo(640)); Assert.That(exportedImage.height, Is.EqualTo(480));
+                    Assert.That(exportedImage.GetPixel(0, 0).r, Is.GreaterThan(.9f));
+                    int red = 0; foreach (var pixel in exportedImage.GetPixels32()) if (pixel.r > 180 && pixel.g < 100 && pixel.b < 100) red++;
+                    Assert.That(red, Is.GreaterThan(2), "3D title uses its custom color on a white background.");
                     int magenta = 0; foreach (var pixel in exportedImage.GetPixels32()) if (pixel.r > pixel.g + 30 && pixel.b > pixel.g + 30) magenta++;
                     Assert.That(magenta, Is.GreaterThan(5), "Export must contain the rendered point appearance.");
                     int white = 0; foreach (var pixel in exportedImage.GetPixels32()) if (pixel.r > 180 && pixel.g > 180 && pixel.b > 180) white++;

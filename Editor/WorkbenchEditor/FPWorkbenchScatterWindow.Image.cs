@@ -54,7 +54,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var bounds = view.Bounds;
             var xMap = new FPWorkbenchAxisMapping(bounds.MinimumX, bounds.MaximumX, settings.XScale);
             var yMap = new FPWorkbenchAxisMapping(bounds.MinimumY, bounds.MaximumY, settings.YScale);
-            using var canvas = new FPWorkbenchImageCanvas(); var plot = new Rect(90, 80, width - 125 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 145);
+            using var canvas = new FPWorkbenchImageCanvas(); canvas.BackgroundColor = settings.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f); canvas.TextColor = settings.WhiteBackground ? Color.black : Color.white; var plot = new Rect(90, 80, width - 125 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 145);
             float X(double value) => plot.x + (float)xMap.Fraction(value) * plot.width;
             float Y(double value) { double f = yMap.Fraction(value); return plot.y + (float)(settings.InvertY ? 1 - f : f) * plot.height; }
             canvas.Line(plot.x, plot.y, plot.xMax, plot.y, Color.gray); canvas.Line(plot.x, plot.y, plot.x, plot.yMax, Color.gray);
@@ -66,17 +66,21 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 float y = Y(tick); if (settings.Grid) canvas.Line(plot.x, y, plot.xMax, y, new Color(.3f, .3f, .3f));
                 canvas.Text(tick.ToString("G5", CultureInfo.InvariantCulture), plot.x - 8, y, TextAnchor.MiddleRight);
             }
-            canvas.Text(string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + XCoordinateName : settings.Title, width / 2f, height - 22);
-            canvas.Text(string.IsNullOrEmpty(settings.XLabel) ? XCoordinateName : settings.XLabel, plot.center.x, 38);
-            canvas.Text(string.IsNullOrEmpty(settings.YLabel) ? names[appliedY] : settings.YLabel, 16, plot.center.y, angle: 90);
-            canvas.Text(view.Points.Count + " / " + view.MatchingCount + (view.Decimated ? " matching points (sampled)" : " matching points"), plot.center.x, height - 43);
+            float LabelPosition(FPWorkbenchLabelAlignment a, float min, float max) => a == FPWorkbenchLabelAlignment.Left ? min : a == FPWorkbenchLabelAlignment.Right ? max : (min + max) / 2;
+            TextAnchor LabelAnchor(FPWorkbenchLabelAlignment a) => a == FPWorkbenchLabelAlignment.Left ? TextAnchor.MiddleLeft : a == FPWorkbenchLabelAlignment.Right ? TextAnchor.MiddleRight : TextAnchor.MiddleCenter;
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(settings, settings.CustomTitleColor, settings.TitleColor);
+            canvas.Text(string.IsNullOrEmpty(settings.Title) ? names[appliedY] + " vs " + XCoordinateName : settings.Title, LabelPosition(settings.TitleAlignment, 10, width - 10), height - Mathf.Max(22, settings.TitleFontSize / 2f + 4), LabelAnchor(settings.TitleAlignment), fontSize: settings.TitleFontSize);
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(settings, settings.CustomXLabelColor, settings.XLabelColor);
+            canvas.Text(string.IsNullOrEmpty(settings.XLabel) ? XCoordinateName : settings.XLabel, LabelPosition(settings.XLabelAlignment, plot.x, plot.xMax), 38, LabelAnchor(settings.XLabelAlignment), fontSize: settings.XLabelFontSize);
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(settings, settings.CustomYLabelColor, settings.YLabelColor);
+            FPWorkbenchPlotView.ExportYLabel(canvas, string.IsNullOrEmpty(settings.YLabel) ? names[appliedY] : settings.YLabel, settings, Mathf.Max(16, settings.YLabelFontSize / 2f + 3), plot.y, plot.yMax);
+            canvas.TextColor = settings.WhiteBackground ? Color.black : Color.white;
             foreach (var point in view.Points) {
                 float size = settings.MarkerSize, x = X(point.X), y = Y(point.Y);
                 // Match the viewer's plot clipping, including markers centered on an edge.
                 float left = Math.Max(plot.x, x - size / 2), bottom = Math.Max(plot.y, y - size / 2);
                 canvas.Quad(left, bottom, Math.Min(plot.xMax, x + size / 2) - left, Math.Min(plot.yMax, y + size / 2) - bottom, pointColor);
             }
-            canvas.Text(hasAlignedRecipe ? "Aligned snapshot; both original source references in provenance" : UtcCaption, plot.center.x, 17);
             pointsOfInterest.Export(canvas, plot, width, height, InterestAxisKey, p => ProjectInterest(p, plot, true), graphSelection.Color, sourceSheetName);
             return canvas.Render(width, height);
         }

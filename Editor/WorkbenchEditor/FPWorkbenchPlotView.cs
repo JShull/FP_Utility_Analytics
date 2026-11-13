@@ -18,6 +18,77 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             settings.Title = EditorGUILayout.TextField("Title", settings.Title);
             settings.XLabel = EditorGUILayout.TextField("X label", settings.XLabel);
             settings.YLabel = EditorGUILayout.TextField("Y label", settings.YLabel);
+            PresentationControls(settings);
+        }
+        internal static void PresentationControls(FPWorkbenchPlotSettings s)
+        {
+            s.WhiteBackground = EditorGUILayout.Toggle("White background", s.WhiteBackground);
+            s.TitleFontSize = EditorGUILayout.IntSlider("Title size", s.TitleFontSize, 8, 64);
+            s.TitleAlignment = (FPWorkbenchLabelAlignment)EditorGUILayout.EnumPopup("Title alignment", s.TitleAlignment);
+            s.CustomTitleColor = EditorGUILayout.Toggle("Custom title color", s.CustomTitleColor);
+            if (s.CustomTitleColor) s.TitleColor = EditorGUILayout.ColorField("Title color", s.TitleColor);
+            s.XLabelFontSize = EditorGUILayout.IntSlider("X label size", s.XLabelFontSize, 8, 64);
+            s.XLabelAlignment = (FPWorkbenchLabelAlignment)EditorGUILayout.EnumPopup("X label alignment", s.XLabelAlignment);
+            s.CustomXLabelColor = EditorGUILayout.Toggle("Custom X label color", s.CustomXLabelColor);
+            if (s.CustomXLabelColor) s.XLabelColor = EditorGUILayout.ColorField("X label color", s.XLabelColor);
+            s.YLabelFontSize = EditorGUILayout.IntSlider("Y label size", s.YLabelFontSize, 8, 64);
+            s.YLabelAlignment = (FPWorkbenchLabelAlignment)EditorGUILayout.EnumPopup("Y label alignment", s.YLabelAlignment);
+            s.YLabelDirection = (FPWorkbenchYLabelDirection)EditorGUILayout.EnumPopup("Y label direction", s.YLabelDirection);
+            if (s.YLabelDirection == FPWorkbenchYLabelDirection.StackedTopToBottom)
+                s.StackedYCharacterSpacing = EditorGUILayout.Slider("Character spacing", s.StackedYCharacterSpacing, 0, 20);
+            s.CustomYLabelColor = EditorGUILayout.Toggle("Custom Y label color", s.CustomYLabelColor);
+            if (s.CustomYLabelColor) s.YLabelColor = EditorGUILayout.ColorField("Y label color", s.YLabelColor);
+        }
+        internal static Color TextColor(FPWorkbenchPlotSettings s, bool custom, Color selected) => custom ? selected : s.WhiteBackground ? Color.black : Color.white;
+        internal static GUIStyle LabelStyle(FPWorkbenchPlotSettings s, int size, FPWorkbenchLabelAlignment alignment, bool bold, bool custom = false, Color selected = default)
+        {
+            var style = new GUIStyle(bold ? EditorStyles.boldLabel : EditorStyles.label) { fontSize = Mathf.Clamp(size, 8, 64), alignment = alignment == FPWorkbenchLabelAlignment.Left ? TextAnchor.MiddleLeft : alignment == FPWorkbenchLabelAlignment.Right ? TextAnchor.MiddleRight : TextAnchor.MiddleCenter, clipping = TextClipping.Clip };
+            style.normal.textColor = TextColor(s, custom, selected); return style;
+        }
+        internal static string StackLabel(string value)
+        {
+            var parts = new System.Collections.Generic.List<string>();
+            var elements = StringInfo.GetTextElementEnumerator(value ?? "");
+            while (elements.MoveNext()) { string part = elements.GetTextElement(); parts.Add(part == "\r" || part == "\n" || part == "\r\n" ? " " : part); }
+            return string.Join("\n", parts);
+        }
+        internal static void DrawYLabel(string value, FPWorkbenchPlotSettings settings, float x, float top, float height)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+            var style = LabelStyle(settings, settings.YLabelFontSize, settings.YLabelAlignment, false, settings.CustomYLabelColor, settings.YLabelColor);
+            if (settings.YLabelDirection == FPWorkbenchYLabelDirection.StackedTopToBottom) {
+                var characters = StackLabel(value).Split('\n');
+                float size = Mathf.Clamp(settings.YLabelFontSize, 8, 64), step = size * 1.2f + Mathf.Clamp(settings.StackedYCharacterSpacing, 0, 20);
+                float total = size * 1.2f + Math.Max(0, characters.Length - 1) * step;
+                float offset = settings.YLabelAlignment == FPWorkbenchLabelAlignment.Left ? 0 : settings.YLabelAlignment == FPWorkbenchLabelAlignment.Right ? height - total : (height - total) / 2;
+                style.alignment = TextAnchor.MiddleCenter;
+                GUI.BeginClip(new Rect(x - 40, top, 80, height));
+                try { for (int i = 0; i < characters.Length; i++) GUI.Label(new Rect(0, offset + i * step, 80, size * 1.2f), characters[i], style); }
+                finally { GUI.EndClip(); }
+                return;
+            }
+            var old = GUI.matrix; var pivot = new Vector2(x, top + height / 2);
+            try { GUIUtility.RotateAroundPivot(settings.YLabelDirection == FPWorkbenchYLabelDirection.TopToBottom ? 90 : -90, pivot);
+                GUI.Label(new Rect(pivot.x - height / 2, pivot.y - Mathf.Max(16, settings.YLabelFontSize / 2f + 2), height, Mathf.Max(32, settings.YLabelFontSize + 4)), value, style);
+            } finally { GUI.matrix = old; }
+        }
+        internal static void ExportYLabel(FPWorkbenchImageCanvas canvas, string value, FPWorkbenchPlotSettings settings, float x, float bottom, float top)
+        {
+            if (string.IsNullOrEmpty(value)) return;
+            if (settings.YLabelDirection == FPWorkbenchYLabelDirection.StackedTopToBottom) {
+                var characters = StackLabel(value).Split('\n');
+                float size = Mathf.Clamp(settings.YLabelFontSize, 8, 64), step = size * 1.2f + Mathf.Clamp(settings.StackedYCharacterSpacing, 0, 20);
+                float total = size * 1.2f + Math.Max(0, characters.Length - 1) * step;
+                if (characters.Length > 256 || total > top - bottom) throw new ArgumentException("Increase PNG height, shorten the Y label, or reduce its font size or character spacing to fit the stacked label.");
+                float stackTop = settings.YLabelAlignment == FPWorkbenchLabelAlignment.Left ? top : settings.YLabelAlignment == FPWorkbenchLabelAlignment.Right ? bottom + total : (top + bottom + total) / 2;
+                for (int i = 0; i < characters.Length; i++) canvas.Text(characters[i], x, stackTop - size * .6f - i * step, TextAnchor.MiddleCenter, fontSize: settings.YLabelFontSize);
+                return;
+            }
+            bool down = settings.YLabelDirection == FPWorkbenchYLabelDirection.TopToBottom;
+            var a = settings.YLabelAlignment; float start = down ? top : bottom, end = down ? bottom : top;
+            float position = a == FPWorkbenchLabelAlignment.Left ? start : a == FPWorkbenchLabelAlignment.Right ? end : (start + end) / 2;
+            var horizontal = a == FPWorkbenchLabelAlignment.Left ? TextAnchor.MiddleLeft : a == FPWorkbenchLabelAlignment.Right ? TextAnchor.MiddleRight : TextAnchor.MiddleCenter;
+            canvas.Text(value, x, position, horizontal, down ? -90 : 90, settings.YLabelFontSize);
         }
         public static void StyleControls(FPWorkbenchPlotSettings settings, bool compact = false, string styleLabel = "Plot style")
         {
@@ -38,9 +109,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         internal static Rect PlotRect(Rect rect, FPWorkbenchPlotSettings settings, bool dual = false)
         {
-            float left = string.IsNullOrEmpty(settings.YLabel) ? 75 : 95;
-            float bottom = string.IsNullOrEmpty(settings.XLabel) ? 50 : 70;
-            return new Rect(rect.x + left, rect.y + 25, Math.Max(1, rect.width - left - (dual ? 95 : 15)), Math.Max(1, rect.height - 25 - bottom));
+            float left = string.IsNullOrEmpty(settings.YLabel) ? 75 : Math.Max(95, settings.YLabelFontSize + 65);
+            float bottom = string.IsNullOrEmpty(settings.XLabel) ? 50 : Math.Max(70, settings.XLabelFontSize + 42);
+            float top = Math.Max(25, settings.TitleFontSize + 5);
+            return new Rect(rect.x + left, rect.y + top, Math.Max(1, rect.width - left - (dual ? 95 : 15)), Math.Max(1, rect.height - top - bottom));
         }
         internal static bool TryScalarAxes(Rect rect, FPWorkbenchSeriesView view, FPWorkbenchPlotSettings settings,
             out Rect area, out FPWorkbenchAxisMapping x, out FPWorkbenchAxisMapping y)
@@ -72,8 +144,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 if (input.type == EventType.MouseDrag) { settings.Navigate(1, 0, -input.delta.x / Math.Max(1, rect.width)); input.Use(); }
                 else if (input.type == EventType.MouseUp) { GUIUtility.hotControl = 0; input.Use(); }
             }
-            EditorGUI.DrawRect(rect, new Color(.1f, .1f, .1f));
-            GUI.Label(new Rect(rect.x + 5, rect.y, rect.width - 10, 20), string.IsNullOrEmpty(settings.Title) ? label : settings.Title, EditorStyles.boldLabel);
+            EditorGUI.DrawRect(rect, settings.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f));
+            GUI.Label(new Rect(rect.x + 5, rect.y, rect.width - 10, Mathf.Max(20, settings.TitleFontSize + 4)), string.IsNullOrEmpty(settings.Title) ? label : settings.Title, LabelStyle(settings, settings.TitleFontSize, settings.TitleAlignment, true, settings.CustomTitleColor, settings.TitleColor));
             if (summary == null || double.IsNaN(overlay == null ? summary.Minimum : overlay.Minimum))
             { GUI.Label(new Rect(rect.x + 10, rect.y + 25, rect.width, 20), summary == null ? "Choose a numeric column and generate its plot." : "No valid numeric samples in this range; inspect values or calculation errors."); return; }
             FPWorkbenchAxisRange leftRange = default, rightRange = default;
@@ -85,18 +157,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             }
             Rect plot = PlotRect(rect, settings, dual);
             if (!string.IsNullOrEmpty(settings.XLabel))
-                GUI.Label(new Rect(plot.x, plot.yMax + 20, plot.width, 18), new GUIContent(settings.XLabel, settings.XLabel), EditorStyles.centeredGreyMiniLabel);
-            if (!string.IsNullOrEmpty(settings.YLabel))
-            {
-                Matrix4x4 matrix = GUI.matrix;
-                Vector2 pivot = new Vector2(rect.x + 12, plot.center.y);
-                try
-                {
-                    GUIUtility.RotateAroundPivot(-90, pivot);
-                    GUI.Label(new Rect(pivot.x - plot.height * .5f, pivot.y - 9, plot.height, 18), new GUIContent(settings.YLabel, settings.YLabel), EditorStyles.centeredGreyMiniLabel);
-                }
-                finally { GUI.matrix = matrix; }
-            }
+                GUI.Label(new Rect(plot.x, plot.yMax + 20, plot.width, Mathf.Max(18, settings.XLabelFontSize + 4)), new GUIContent(settings.XLabel, settings.XLabel), LabelStyle(settings, settings.XLabelFontSize, settings.XLabelAlignment, false, settings.CustomXLabelColor, settings.XLabelColor));
+            DrawYLabel(settings.YLabel, settings, rect.x + Mathf.Max(12, settings.YLabelFontSize / 2f + 3), plot.y, plot.height);
             if (dual && !string.IsNullOrEmpty(axes.RightSettings.YLabel))
             {
                 Matrix4x4 matrix = GUI.matrix; Vector2 pivot = new Vector2(rect.xMax - 12, plot.center.y);
@@ -120,22 +182,22 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 foreach (double tick in overlay != null && axes != null && !leftRange.HasValues ? Array.Empty<double>() : FPWorkbenchAxis.Ticks(minimum, maximum, settings.YScale, settings.YTickSpacing))
                 {
                     float y = Y(tick);
-                    if (settings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(1, 1, 1, .12f));
-                    GUI.Label(new Rect(plot.x - 73, y - 8, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+                    if (settings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), settings.WhiteBackground ? new Color(0, 0, 0, .18f) : new Color(1, 1, 1, .12f));
+                    GUI.Label(new Rect(plot.x - 73, y - 8, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), LabelStyle(settings, 11, FPWorkbenchLabelAlignment.Left, false));
                 }
                 if (dual && rightRange.HasValues)
                     foreach (double tick in FPWorkbenchAxis.Ticks(rightRange.Minimum, rightRange.Maximum, axes.RightSettings.YScale, axes.RightSettings.YTickSpacing))
                     {
                         double fraction = rightMap.Fraction(tick);
                         float y = plot.y + (float)(axes.RightSettings.InvertY ? fraction : 1 - fraction) * plot.height;
-                        if (axes.RightSettings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(1, 1, 1, .07f));
-                        GUI.Label(new Rect(plot.xMax + 4, y - 8, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+                        if (axes.RightSettings.Grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), settings.WhiteBackground ? new Color(0, 0, 0, .12f) : new Color(1, 1, 1, .07f));
+                        GUI.Label(new Rect(plot.xMax + 4, y - 8, 70, 18), tick.ToString("G5", CultureInfo.InvariantCulture), LabelStyle(settings, 11, FPWorkbenchLabelAlignment.Left, false));
                     }
                 foreach (double tick in FPWorkbenchAxis.Ticks(summary.StartX, summary.EndX, settings.XScale, settings.XTickSpacing))
                 {
                     float x = X(tick);
-                    if (settings.Grid) EditorGUI.DrawRect(new Rect(x, plot.y, 1, plot.height), new Color(1, 1, 1, .12f));
-                    GUI.Label(new Rect(x - 20, plot.yMax + 2, 70, 18), tick.ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+                    if (settings.Grid) EditorGUI.DrawRect(new Rect(x, plot.y, 1, plot.height), settings.WhiteBackground ? new Color(0, 0, 0, .18f) : new Color(1, 1, 1, .12f));
+                    GUI.Label(new Rect(x - 20, plot.yMax + 2, 70, 18), tick.ToString("G6", CultureInfo.InvariantCulture), LabelStyle(settings, 11, FPWorkbenchLabelAlignment.Left, false));
                 }
             }
             catch (ArgumentException ex) { GUI.Label(new Rect(plot.x, plot.y, plot.width, 20), ex.Message); }

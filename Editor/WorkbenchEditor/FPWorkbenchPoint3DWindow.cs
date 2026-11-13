@@ -31,6 +31,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private double minX, maxX = 1, minY, maxY = 1, minZ, maxZ = 1;
         [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
         [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigureDivider figureDivider = new FPWorkbenchFigureDivider();
+        [SerializeField] private FPWorkbenchPlotSettings presentation = new FPWorkbenchPlotSettings();
+        [SerializeField] private bool showLabelSettings;
         [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
         private bool pinnedReferencesReady;
         [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
@@ -101,8 +104,10 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 MaximumLocalError = batch.Prepared.MaximumLocalError, Figure = figure, PointBudget = batch.Budget, InvalidSourceRows = batch.Cache.InvalidCount };
             PreviewRenderUtility export = null; Texture2D image = null, annotated = null;
             try {
+                float interestBand = pointsOfInterest.BandWidth(width, height, InterestAxisKey);
+                if (pointsOfInterest.HasExportPoints(InterestAxisKey) && (width < 640 || height < 480)) throw new ArgumentException("3D points-of-interest exports need at least 640 by 480 pixels.");
                 export = new PreviewRenderUtility(); bool label = width >= 640 && height >= 480;
-                Rect plot = label ? new Rect(40, 125, width - 80 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 210) : new Rect(0, 0, width, height);
+                Rect plot = label ? new Rect(40, 125, width - 80 - interestBand, height - 210) : new Rect(0, 0, width, height);
                 var rect = new Rect(0, 0, plot.width, plot.height);
                 export.BeginStaticPreview(rect); RenderPoints(export, rect); image = export.EndStaticPreview();
                 if (label) { annotated = AnnotatePointImage(image, export.camera, plot, width, height, metadata); metadata.Annotated = true; }
@@ -161,6 +166,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             var bounds = batch == null ? (clip ? new FPWorkbenchSpatialBounds(minX, maxX, minY, maxY, minZ, maxZ) : default) : batch.Limits;
             var figure = new FPWorkbenchFigureDocument { Id = figureId, Name = "3D point figure", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Point3D, Rows = rowRange.Copy(), SourceSheetId = sourceSheetId, SourceSheetName = sourceSheetName, PointsOfInterest = pointsOfInterest.Snapshot(),
                 Binding = new FPWorkbenchSeriesBinding { XMode = FPWorkbenchXMode.Numeric, XColumn = Physical(axes[0]), YColumn = Physical(axes[1]), XDerivedId = Derived(axes[0]), YDerivedId = Derived(axes[1]) },
+                Plot = JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(presentation)),
                 PointBudget = batch?.Budget ?? pointBudget, InvalidPolicy = batch?.Policy ?? invalidPolicy, Colors = new[] { pointColor },
                 Spatial = new FPWorkbenchPoint3DSettings { ZColumn = Physical(axes[2]), ZDerivedId = Derived(axes[2]), Clip = batch?.Clip ?? clip,
                     MinimumX = bounds.MinimumX, MaximumX = bounds.MaximumX, MinimumY = bounds.MinimumY, MaximumY = bounds.MaximumY, MinimumZ = bounds.MinimumZ, MaximumZ = bounds.MaximumZ,
@@ -180,6 +186,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             int z = !string.IsNullOrEmpty(spatial.ZDerivedId) ? source.ColumnCount + new FPWorkbenchSeriesBinding { YDerivedId = spatial.ZDerivedId }.ResolveDerivedY(formulas) : spatial.ZColumn;
             var schema = new FPWorkbenchTableView(source, formulas); schema.ColumnId(x); schema.ColumnId(y); schema.ColumnId(z);
             var window = CreateInstance<FPWorkbenchPoint3DWindow>(); window.workbook = owner; window.figureId = figure.Id; window.cacheDirectory = source.CacheDirectory; window.datasetId = source.DatasetId;
+            window.presentation = figure.Plot == null ? new FPWorkbenchPlotSettings() : JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(figure.Plot));
             window.xColumn = x; window.yColumn = y; window.zColumn = z; window.pointBudget = figure.PointBudget; window.invalidPolicy = figure.InvalidPolicy;
             window.calculations = formulas == null ? null : JsonUtility.ToJson(formulas.Definition); window.corrections = figure.HasCorrectionSnapshot ? JsonUtility.ToJson(figure.CorrectionSnapshot) : null;
             window.rowRange = figure.Rows.Copy(); window.sourceSheetId = figure.SourceSheetId; window.sourceSheetName = figure.SourceSheetName; window.pointsOfInterest.Restore(figure.PointsOfInterest);
@@ -326,11 +333,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
             GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
             if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
+            figureDivider ??= new FPWorkbenchFigureDivider();
+            int dividerControl = GUIUtility.GetControlID(731660, FocusType.Passive);
             using (new EditorGUILayout.HorizontalScope()) {
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(figureDivider.Width(position.width)))) {
                     figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
                     try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
                 }
+                figureDivider.Draw(this, dividerControl);
                 using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
             }
         }
@@ -361,6 +371,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 showAxisValues = GUILayout.Toggle(showAxisValues, new GUIContent("Axis values", "Source-coordinate ticks on each visible axis; units follow the bound column."), GUILayout.ExpandWidth(true));
                 float nextNear = EditorGUILayout.FloatField(new GUIContent("Near clip", "Camera distance in normalized preview units."), nearClip);
                 if (!float.IsNaN(nextNear) && !float.IsInfinity(nextNear)) nearClip = Mathf.Clamp(nextNear, .00001f, 1);
+            }
+            showLabelSettings = EditorGUILayout.Foldout(showLabelSettings, "Labels and background", true);
+            if (showLabelSettings) {
+                presentation.Title = EditorGUILayout.TextField("Title", presentation.Title);
+                presentation.XLabel = EditorGUILayout.TextField("X label", presentation.XLabel);
+                presentation.YLabel = EditorGUILayout.TextField("Y label", presentation.YLabel);
+                FPWorkbenchPlotView.PresentationControls(presentation);
             }
             string beforeAppearance = AppearanceJson();
             using (new EditorGUILayout.VerticalScope())
@@ -409,6 +426,9 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             if (dataset == null) { EditorGUILayout.HelpBox("Verifying figure source…", MessageType.Info); return; }
             Rect rect = GUILayoutUtility.GetRect(100, 10000, 150, 10000, GUILayout.ExpandHeight(true)); DrawPreview(rect);
             pointsOfInterest.DrawMarkers(InterestAxisKey, p => ProjectInterest(p, preview.camera, rect, false), graphSelection.Color);
+            if (!string.IsNullOrEmpty(presentation.Title)) GUI.Label(new Rect(rect.x + 5, rect.y, rect.width - 10, Mathf.Max(24, presentation.TitleFontSize + 4)), presentation.Title, FPWorkbenchPlotView.LabelStyle(presentation, presentation.TitleFontSize, presentation.TitleAlignment, true, presentation.CustomTitleColor, presentation.TitleColor));
+            if (!string.IsNullOrEmpty(presentation.XLabel)) GUI.Label(new Rect(rect.x + 25, rect.yMax - 32, rect.width - 50, Mathf.Max(32, presentation.XLabelFontSize + 4)), presentation.XLabel, FPWorkbenchPlotView.LabelStyle(presentation, presentation.XLabelFontSize, presentation.XLabelAlignment, false, presentation.CustomXLabelColor, presentation.XLabelColor));
+            FPWorkbenchPlotView.DrawYLabel(presentation.YLabel, presentation, rect.x + Mathf.Max(16, presentation.YLabelFontSize / 2f + 3), rect.y, rect.height);
             if (selected)
             {
                 graphSelection.Legend("Source row " + (selection.Row + 1) + ": " + selection.X.ToString("R", CultureInfo.InvariantCulture) + ", " + selection.Y.ToString("R", CultureInfo.InvariantCulture) + ", " + selection.Z.ToString("R", CultureInfo.InvariantCulture));
@@ -456,7 +476,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private void RenderPoints(PreviewRenderUtility target, Rect rect)
         {
             Camera camera = target.camera; var bounds = renderer.Mesh.bounds;
-            camera.backgroundColor = new Color(.1f, .1f, .1f); camera.clearFlags = CameraClearFlags.Color; camera.fieldOfView = FPMeshPreviewEditorUtility.DefaultFieldOfView;
+            camera.backgroundColor = presentation.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f); camera.clearFlags = CameraClearFlags.Color; camera.fieldOfView = FPMeshPreviewEditorUtility.DefaultFieldOfView;
             float distance = FPMeshPreviewEditorUtility.CalculateFitDistance(bounds, rect) * zoom;
             camera.transform.SetPositionAndRotation(bounds.center + pan - orbit * Vector3.forward * distance, orbit);
             camera.orthographic = projection == FPMeshPreviewProjection.Orthographic;
@@ -557,14 +577,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                         }
                     }
                     if (visible[end]) {
-                        GUI.Label(new Rect(Mathf.Clamp(corners[end].x + 5, 0, Math.Max(0, area.width - 20)), Mathf.Clamp(corners[end].y - 18, 0, Math.Max(0, area.height - 20)), 20, 20), a == 0 ? "X" : a == 1 ? "Y" : "Z", EditorStyles.boldLabel);
+                        GUI.Label(new Rect(Mathf.Clamp(corners[end].x + 5, 0, Math.Max(0, area.width - 20)), Mathf.Clamp(corners[end].y - 18, 0, Math.Max(0, area.height - 20)), 20, 20), a == 0 ? "X" : a == 1 ? "Y" : "Z", FPWorkbenchPlotView.LabelStyle(presentation, 11, FPWorkbenchLabelAlignment.Left, true));
                     }
                 }
                 if (showOrigin && ProjectOrigin(camera, area, out var origin)) {
-                    Handles.color = Color.white; Handles.DrawWireDisc(origin, Vector3.forward, 4);
+                    Handles.color = presentation.WhiteBackground ? Color.black : Color.white; Handles.DrawWireDisc(origin, Vector3.forward, 4);
                     Handles.DrawAAPolyLine(2, origin - Vector3.right * 7, origin + Vector3.right * 7);
                     Handles.DrawAAPolyLine(2, origin - Vector3.up * 7, origin + Vector3.up * 7);
-                    GUI.Label(new Rect(origin.x + 8, origin.y + 5, 90, 20), "(0, 0, 0)", EditorStyles.miniLabel);
+                    GUI.Label(new Rect(origin.x + 8, origin.y + 5, 90, 20), "(0, 0, 0)", FPWorkbenchPlotView.LabelStyle(presentation, 11, FPWorkbenchLabelAlignment.Left, false));
                 }
                 if (ProjectSelection(camera, area, out var picked)) {
                     Handles.color = Color.black; Handles.DrawWireDisc(picked, Vector3.forward, 9);

@@ -20,6 +20,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         [SerializeField] private long firstRow, endRow;
         [SerializeField] private double minimum, maximum = 1;
         [SerializeField] private bool density, grid = true, fitOnOpen = true;
+        [SerializeField] private FPWorkbenchPlotSettings presentation = new FPWorkbenchPlotSettings();
+        [SerializeField] private bool showLabelSettings;
         [SerializeField] private FPWorkbenchInvalidPolicy invalidPolicy = FPWorkbenchInvalidPolicy.Skip;
         private FPWorkbenchCsvDataset dataset;
         private IDisposable diskLease;
@@ -39,6 +41,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         private GUIContent equationLabel;
         [SerializeField] private string sourceSheetId = "", sourceSheetName = "";
         [SerializeField] private Vector2 figureSettingsScroll;
+        [SerializeField] private FPWorkbenchFigureDivider figureDivider = new FPWorkbenchFigureDivider();
         [SerializeField] private FPWorkbenchFigurePoints pointsOfInterest = new FPWorkbenchFigurePoints();
         private bool pinnedReferencesReady;
         [SerializeField] private FPWorkbenchRowRange rowRange = new FPWorkbenchRowRange();
@@ -95,6 +98,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         {
             Id = figureId, Name = columnName + " histogram", DatasetId = datasetId, Kind = FPWorkbenchFigureKind.Histogram, SourceSheetId = sourceSheetId, SourceSheetName = sourceSheetName, PointsOfInterest = pointsOfInterest.Snapshot(), Rows = rowRange.Copy(),
             HistogramColumn = string.IsNullOrEmpty(derivedId) ? column : 0, HistogramDerivedId = derivedId, HistogramBins = shown.Bins, FirstRow = shown.FirstRow, EndRow = shown.EndRow, Minimum = shown.Minimum, Maximum = shown.Maximum,
+            Plot = JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(presentation)),
             Density = density, Grid = grid, FitHistogramOnOpen = shown.FitOnOpen, InvalidPolicy = shown.InvalidPolicy,
             HasCorrectionSnapshot = !string.IsNullOrEmpty(corrections),
             HasCalculationSnapshot = !string.IsNullOrEmpty(calculations),
@@ -110,6 +114,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             window.column = saved.HistogramColumn; window.bins = saved.HistogramBins; window.derivedId = saved.HistogramDerivedId;
             window.calculations = saved.HasCalculationSnapshot ? JsonUtility.ToJson(saved.CalculationSnapshot) : null;
             window.firstRow = saved.FirstRow; window.endRow = saved.EndRow; window.minimum = saved.Minimum; window.maximum = saved.Maximum;
+            window.presentation = saved.Plot == null ? new FPWorkbenchPlotSettings() : JsonUtility.FromJson<FPWorkbenchPlotSettings>(JsonUtility.ToJson(saved.Plot));
             window.density = saved.Density; window.grid = saved.Grid; window.fitOnOpen = saved.FitHistogramOnOpen; window.invalidPolicy = saved.InvalidPolicy;
             window.corrections = saved.CorrectionSnapshot == null ? null : JsonUtility.ToJson(saved.CorrectionSnapshot); window.Attach(source);
             window.columnName = string.IsNullOrEmpty(window.derivedId) ? source.GetColumnName(window.column) : window.program.Name(window.column);
@@ -221,11 +226,14 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             sourceSheetName = FPDataWorkbenchWindow.FigureSheetName(workbook, sourceSheetId, sourceSheetName);
             GUILayout.Label(string.IsNullOrEmpty(sourceSheetName) ? "Workbook-level figure" : "Sheet: " + sourceSheetName, EditorStyles.boldLabel);
             if (dataset != null) FPDataWorkbenchWindow.DrawFigureRowScope(sourceSheetId, rowRange, dataset.RowCount);
+            figureDivider ??= new FPWorkbenchFigureDivider();
+            int dividerControl = GUIUtility.GetControlID(731660, FocusType.Passive);
             using (new EditorGUILayout.HorizontalScope()) {
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(360))) {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox, GUILayout.Width(figureDivider.Width(position.width)))) {
                     figureSettingsScroll = EditorGUILayout.BeginScrollView(figureSettingsScroll);
                     try { DrawFigureSettings(); DrawPointsOfInterest(); } finally { EditorGUILayout.EndScrollView(); }
                 }
+                figureDivider.Draw(this, dividerControl);
                 using (new EditorGUILayout.VerticalScope()) DrawFigureGraph();
             }
         }
@@ -255,6 +263,13 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 density = GUILayout.Toggle(density, "Density", EditorStyles.toolbarButton); grid = GUILayout.Toggle(grid, "Grid", EditorStyles.toolbarButton);
                 if (Busy) { GUILayout.Label(waitingForMemory ? "Waiting for shared memory / scan capacity…" : "Reading source in background…", EditorStyles.miniLabel); if (GUILayout.Button("Cancel")) CancelHistogram(); }
             }
+            showLabelSettings = EditorGUILayout.Foldout(showLabelSettings, "Labels and background", true);
+            if (showLabelSettings) {
+                presentation.Title = EditorGUILayout.TextField("Title", presentation.Title);
+                presentation.XLabel = EditorGUILayout.TextField("X label", presentation.XLabel);
+                presentation.YLabel = EditorGUILayout.TextField("Y label", presentation.YLabel);
+                FPWorkbenchPlotView.PresentationControls(presentation);
+            }
             RecordHistogramSettings(beforeSettings);
             DrawImageExport();
             FPWorkbenchPlotPresetGUI.DrawFileActions(() => new FPWorkbenchHistogramPreset { Density = density, Grid = grid }.ToJson(),
@@ -270,8 +285,12 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 }
         private void DrawBars(Rect area)
         {
-            EditorGUI.DrawRect(area, new Color(.1f, .1f, .1f));
-            Rect plot = new Rect(area.x + 62, area.y + 20, Math.Max(1, area.width - 76), Math.Max(1, area.height - 48));
+            EditorGUI.DrawRect(area, presentation.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f));
+            float leftMargin = Math.Max(80, presentation.YLabelFontSize + 50), topMargin = Math.Max(25, presentation.TitleFontSize + 5), bottomMargin = Math.Max(55, presentation.XLabelFontSize + 30);
+            Rect plot = new Rect(area.x + leftMargin, area.y + topMargin, Math.Max(1, area.width - leftMargin - 14), Math.Max(1, area.height - topMargin - bottomMargin));
+            GUI.Label(new Rect(area.x + 5, area.y, area.width - 10, Mathf.Max(24, presentation.TitleFontSize + 4)), string.IsNullOrEmpty(presentation.Title) ? columnName + " — Histogram" : presentation.Title, FPWorkbenchPlotView.LabelStyle(presentation, presentation.TitleFontSize, presentation.TitleAlignment, true, presentation.CustomTitleColor, presentation.TitleColor));
+            GUI.Label(new Rect(plot.x, plot.yMax + 22, plot.width, Mathf.Max(32, presentation.XLabelFontSize + 4)), string.IsNullOrEmpty(presentation.XLabel) ? columnName : presentation.XLabel, FPWorkbenchPlotView.LabelStyle(presentation, presentation.XLabelFontSize, presentation.XLabelAlignment, false, presentation.CustomXLabelColor, presentation.XLabelColor));
+            FPWorkbenchPlotView.DrawYLabel(string.IsNullOrEmpty(presentation.YLabel) ? (density ? "Density" : "Count") : presentation.YLabel, presentation, area.x + Mathf.Max(15, presentation.YLabelFontSize / 2f + 3), plot.y, plot.height);
             double peak = 0;
             for (int i = 0; i < result.Counts.Count; i++) peak = Math.Max(peak, density ? result.Density(i) : result.Counts[i]);
             if (peak == 0) peak = 1;
@@ -279,7 +298,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
             {
                 float y = plot.yMax - plot.height * i / 4;
                 if (grid) EditorGUI.DrawRect(new Rect(plot.x, y, plot.width, 1), new Color(.4f, .4f, .4f, .3f));
-                GUI.Label(new Rect(area.x + 3, y - 8, 58, 18), (peak * i / 4).ToString("G4", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+                GUI.Label(new Rect(area.x + 30, y - 8, 48, 18), (peak * i / 4).ToString("G4", CultureInfo.InvariantCulture), FPWorkbenchPlotView.LabelStyle(presentation, 11, FPWorkbenchLabelAlignment.Left, false));
             }
             float width = plot.width / result.Counts.Count;
             for (int i = 0; i < result.Counts.Count; i++)
@@ -287,8 +306,8 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 double value = density ? result.Density(i) : result.Counts[i]; float height = (float)(value / peak * plot.height);
                 EditorGUI.DrawRect(new Rect(plot.x + width * i, plot.yMax - height, Math.Max(.5f, width - 1), height), new Color(.15f, .65f, .9f));
             }
-            GUI.Label(new Rect(plot.x, plot.yMax + 4, plot.width / 2, 20), result.Edges[0].ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
-            GUI.Label(new Rect(plot.xMax - 100, plot.yMax + 4, 100, 20), result.Edges[result.Edges.Count - 1].ToString("G6", CultureInfo.InvariantCulture), EditorStyles.miniLabel);
+            GUI.Label(new Rect(plot.x, plot.yMax + 4, plot.width / 2, 20), result.Edges[0].ToString("G6", CultureInfo.InvariantCulture), FPWorkbenchPlotView.LabelStyle(presentation, 11, FPWorkbenchLabelAlignment.Left, false));
+            GUI.Label(new Rect(plot.xMax - 100, plot.yMax + 4, 100, 20), result.Edges[result.Edges.Count - 1].ToString("G6", CultureInfo.InvariantCulture), FPWorkbenchPlotView.LabelStyle(presentation, 11, FPWorkbenchLabelAlignment.Left, false));
             pointsOfInterest.DrawMarkers(InterestAxisKey, p => ProjectInterest(p, plot, false), Color.yellow);
             if (plot.Contains(Event.current.mousePosition))
             {

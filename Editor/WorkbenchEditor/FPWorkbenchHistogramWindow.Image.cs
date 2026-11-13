@@ -48,7 +48,7 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
         }
         private Texture2D RenderHistogramImage(int width, int height)
         {
-            using var canvas = new FPWorkbenchImageCanvas();
+            using var canvas = new FPWorkbenchImageCanvas(); canvas.BackgroundColor = presentation.WhiteBackground ? Color.white : new Color(.1f, .1f, .1f); canvas.TextColor = presentation.WhiteBackground ? Color.black : Color.white;
             Rect plot = new Rect(85, 65, width - 115 - pointsOfInterest.BandWidth(width, height, InterestAxisKey), height - 120);
             double peak = 0;
             for (int i = 0; i < result.Counts.Count; i++) peak = Math.Max(peak, density ? result.Density(i) : result.Counts[i]);
@@ -61,9 +61,15 @@ namespace FuzzPhyte.Utility.Analytics.WorkBench.Editor
                 double value = result.Edges[0] + (result.Edges[result.Edges.Count - 1] - result.Edges[0]) * i / 4;
                 canvas.Text(value.ToString("G5", CultureInfo.InvariantCulture), plot.x + plot.width * i / 4, plot.y - 18);
             }
-            canvas.Text(columnName + " — Histogram", width / 2f, height - 22);
-            canvas.Text(density ? "Density" : "Count", plot.x, height - 43, TextAnchor.MiddleLeft);
-            canvas.Text(columnName, plot.center.x, 20);
+            float LabelPosition(FPWorkbenchLabelAlignment a, float min, float max) => a == FPWorkbenchLabelAlignment.Left ? min : a == FPWorkbenchLabelAlignment.Right ? max : (min + max) / 2;
+            TextAnchor LabelAnchor(FPWorkbenchLabelAlignment a) => a == FPWorkbenchLabelAlignment.Left ? TextAnchor.MiddleLeft : a == FPWorkbenchLabelAlignment.Right ? TextAnchor.MiddleRight : TextAnchor.MiddleCenter;
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(presentation, presentation.CustomTitleColor, presentation.TitleColor);
+            canvas.Text(string.IsNullOrEmpty(presentation.Title) ? columnName + " — Histogram" : presentation.Title, LabelPosition(presentation.TitleAlignment, 10, width - 10), height - Mathf.Max(22, presentation.TitleFontSize / 2f + 4), LabelAnchor(presentation.TitleAlignment), fontSize: presentation.TitleFontSize);
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(presentation, presentation.CustomXLabelColor, presentation.XLabelColor);
+            canvas.Text(string.IsNullOrEmpty(presentation.XLabel) ? columnName : presentation.XLabel, LabelPosition(presentation.XLabelAlignment, plot.x, plot.xMax), 20, LabelAnchor(presentation.XLabelAlignment), fontSize: presentation.XLabelFontSize);
+            canvas.TextColor = FPWorkbenchPlotView.TextColor(presentation, presentation.CustomYLabelColor, presentation.YLabelColor);
+            FPWorkbenchPlotView.ExportYLabel(canvas, string.IsNullOrEmpty(presentation.YLabel) ? (density ? "Density" : "Count") : presentation.YLabel, presentation, Mathf.Max(16, presentation.YLabelFontSize / 2f + 3), plot.y, plot.yMax);
+            canvas.TextColor = presentation.WhiteBackground ? Color.black : Color.white;
             float binWidth = plot.width / result.Counts.Count;
             for (int i = 0; i < result.Counts.Count; i++) {
                 float h = (float)((density ? result.Density(i) : result.Counts[i]) / peak * plot.height);
